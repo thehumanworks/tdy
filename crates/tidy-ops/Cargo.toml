@@ -13,6 +13,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 blake3.workspace = true
 rayon.workspace = true
+parking_lot.workspace = true
+zstd = { workspace = true, features = ["zstdmt"] }
+tar = "0.4"
 
 [dev-dependencies]
 tempfile.workspace = true

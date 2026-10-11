@@ -1,6 +1,7 @@
 mod judge_cmds;
 mod plan_cmds;
 mod scan_cmds;
+mod space_cmds;
 mod tui;
 mod ui;
 
@@ -41,6 +42,10 @@ enum Cmd {
     Detectors,
     /// Write an example policy to ~/.config/tidy/policy.toml.
     Init(plan_cmds::InitCmd),
+    /// Find duplicate files; --plan dedupes them with copy-on-write clones.
+    Dupes(space_cmds::DupesCmd),
+    /// Plan archives (or transparent compression) for large, cold folders.
+    Archive(space_cmds::ArchiveCmd),
     /// Check or test the policy file.
     #[command(subcommand)]
     Policy(judge_cmds::PolicyCmd),
@@ -81,6 +86,8 @@ fn main() {
         Cmd::Purge(c) => plan_cmds::cmd_purge(c),
         Cmd::Detectors => plan_cmds::cmd_detectors(),
         Cmd::Init(c) => plan_cmds::cmd_init(c),
+        Cmd::Dupes(c) => space_cmds::cmd_dupes(c),
+        Cmd::Archive(c) => space_cmds::cmd_archive(c),
         Cmd::Policy(c) => judge_cmds::cmd_policy(c),
         Cmd::Judge(c) => judge_cmds::cmd_judge(c),
         Cmd::Calibrate(c) => judge_cmds::cmd_calibrate(c),

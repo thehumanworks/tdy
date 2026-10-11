@@ -135,7 +135,7 @@ pub fn apply(plan: &mut Plan, opts: &ApplyOptions, preflight: Preflight<'_>, on:
             Ok(outcome) => {
                 j.log(&e.id, Phase::Done, action, &e.path, outcome.now_at.as_deref(), None)?;
                 match e.action {
-                    Action::Trash | Action::Quarantine => report.parked += e.bytes.private,
+                    Action::Trash | Action::Quarantine | Action::Archive => report.parked += e.bytes.private,
                     _ => report.freed += outcome.freed,
                 }
                 e.status = Status::Applied;
@@ -191,7 +191,28 @@ enum TargetErr {
 
 fn resolve_target(e: &Entry, plan_id: &str, reserve: bool) -> std::result::Result<Target, TargetErr> {
     match e.action {
-        Action::Delete | Action::Tag => Ok(Target::None),
+        Action::Delete | Action::Tag | Action::Compress => Ok(Target::None),
+        Action::Dedupe => {
+            let keeper = e.dest.clone().ok_or_else(|| TargetErr::Fail("dedupe needs the original (dest)".into()))?;
+            let want = e.fingerprint.hash.clone().ok_or_else(|| TargetErr::Fail("dedupe needs a content hash".into()))?;
+            match tidy_ops::fingerprint::hash_file(&keeper) {
+                Ok(h) if h == want => Ok(Target::Path(keeper)),
+                Ok(_) => Err(TargetErr::Skip(format!("{} changed since planning", keeper.display()))),
+                Err(err) => Err(TargetErr::Skip(format!("{}: {err}", keeper.display()))),
+            }
+        }
+        Action::Archive => {
+            let dest = e.dest.clone().unwrap_or_else(|| {
+                let mut n = e.path.file_name().unwrap_or_default().to_os_string();
+                n.push(".tar.zst");
+                e.path.with_file_name(n)
+            });
+            if exists(&dest) {
+                return Err(TargetErr::Skip(format!("{} already exists", dest.display())));
+            }
+            let q = trash::quarantine_slot(&e.path, plan_id, &e.id, reserve).map_err(|x| TargetErr::Fail(x.to_string()))?;
+            Ok(Target::DuplicateOf(dest, q))
+        }
         Action::Trash => trash::trash_slot(&e.path, reserve).map(Target::Trash).map_err(|x| TargetErr::Fail(x.to_string())),
         Action::Quarantine => trash::quarantine_slot(&e.path, plan_id, &e.id, reserve).map(Target::Path).map_err(|x| TargetErr::Fail(x.to_string())),
         Action::Move | Action::Rename | Action::Copy => {
@@ -219,7 +240,6 @@ fn resolve_target(e: &Entry, plan_id: &str, reserve: bool) -> std::result::Resul
             }
             Ok(Target::Path(dest))
         }
-        a => Err(TargetErr::Fail(format!("action `{}` is not supported by this version", a.as_str()))),
     }
 }
 
@@ -248,6 +268,29 @@ fn execute(e: &Entry, t: &Target, j: &mut Journal) -> Result<Outcome> {
             }
             move_any(&e.path, dst, e, j)?;
             out.now_at = Some(dst.clone());
+        }
+        (Action::Dedupe, Target::Path(keeper)) => {
+            tidy_ops::space::dedupe(keeper, &e.path)?;
+            out.freed = e.bytes.private;
+        }
+        (Action::Compress, _) => {
+            tidy_ops::space::transparent_compress(&e.path)?;
+            let after = std::fs::symlink_metadata(&e.path).map(|m| {
+                use std::os::unix::fs::MetadataExt;
+                m.blocks() * 512
+            });
+            if let Ok(a) = after {
+                out.freed = e.bytes.alloc.saturating_sub(a);
+            }
+        }
+        (Action::Archive, Target::DuplicateOf(archive, q)) => {
+            let (bytes, _) = tidy_ops::space::archive_dir(&e.path, archive, 9)?;
+            if let Err(err) = rename_noreplace(&e.path, q) {
+                let _ = std::fs::remove_file(archive);
+                return Err(err.into());
+            }
+            out.now_at = Some(q.clone());
+            out.previous = Some(serde_json::json!({"archive": archive, "archive_bytes": bytes}));
         }
         (Action::Tag, _) => {
             let before = tidy_ops::meta::get_tags(&e.path);
@@ -327,7 +370,9 @@ fn partial_path(dst: &Path) -> PathBuf {
 fn describe(e: &Entry, t: &Target) -> String {
     match t {
         Target::None => format!("{} {}", e.action.as_str(), e.path.display()),
+        Target::DuplicateOf(d, _) if e.action == Action::Archive => format!("archive {} → {} (original to quarantine)", e.path.display(), d.display()),
         Target::DuplicateOf(d, _) => format!("{} is identical to {} → quarantine", e.path.display(), d.display()),
+        Target::Path(k) if e.action == Action::Dedupe => format!("dedupe {} ⇐ clone of {}", e.path.display(), k.display()),
         _ if e.action == Action::Tag => format!("tag {} +{}", e.path.display(), e.tags.join(",")),
         t => format!("{} {} → {}", e.action.as_str(), e.path.display(), t.dst().map(|p| p.display().to_string()).unwrap_or_default()),
     }
@@ -369,6 +414,15 @@ pub fn undo(plan: &mut Plan, only: Option<&HashSet<String>>, on: &mut dyn FnMut(
         let res: Result<()> = (|| {
             match e.action {
                 Action::Copy => remove_tree(&now_at)?,
+                Action::Archive => {
+                    if let Some(parent) = e.path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    rename_noreplace(&now_at, &e.path)?;
+                    if let Some(a) = e.outcome.as_ref().and_then(|o| o.previous.as_ref()).and_then(|v| v.get("archive")).and_then(|a| a.as_str()) {
+                        let _ = std::fs::remove_file(a);
+                    }
+                }
                 Action::Tag => {
                     let prev: Vec<String> = e.outcome.as_ref().and_then(|o| o.previous.clone()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
                     tidy_ops::meta::set_tags(&e.path, &prev)?;

@@ -7,6 +7,7 @@ pub mod index;
 pub mod path;
 pub mod platform;
 pub mod snapshot;
+pub mod visit;
 pub mod walk;
 
 pub use entry::{EntryInfo, Kind, ReadOptions};

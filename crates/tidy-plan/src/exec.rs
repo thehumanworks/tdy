@@ -466,6 +466,22 @@ pub fn recover(plan: &mut Plan) -> Result<Vec<String>> {
                     "undo had not completed".to_string()
                 }
             }
+            // Terminal phases the plan file missed (crash between journal and save).
+            Phase::Done if e.status != Status::Applied => {
+                e.status = Status::Applied;
+                let freed = if e.action == Action::Delete { e.bytes.private } else { 0 };
+                e.outcome = Some(Outcome { at: r.ts, now_at: r.to.clone(), freed, ..Default::default() });
+                "completed before the plan was saved".to_string()
+            }
+            Phase::Fail if e.status != Status::Failed => {
+                e.status = Status::Failed;
+                e.outcome = Some(Outcome { at: r.ts, error: r.note.clone(), ..Default::default() });
+                "failed before the plan was saved".to_string()
+            }
+            Phase::UndoDone if e.status != Status::Undone => {
+                e.status = Status::Undone;
+                "undo completed before the plan was saved".to_string()
+            }
             _ => continue,
         };
         let jj = match j.as_mut() {

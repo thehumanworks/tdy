@@ -15,6 +15,51 @@ pub mod node_flags {
     pub const UNREADABLE: u16 = 1 << 0;
     /// A child directory on another device was skipped.
     pub const MOUNT_SKIPPED: u16 = 1 << 1;
+    // Marker entries seen directly inside the directory (set during the scan
+    // by a cheap name match, so detectors never need extra syscalls).
+    pub const M_CACHEDIR_TAG: u16 = 1 << 2;
+    pub const M_CARGO_TOML: u16 = 1 << 3;
+    pub const M_PACKAGE_JSON: u16 = 1 << 4;
+    pub const M_PYVENV_CFG: u16 = 1 << 5;
+    pub const M_PACKAGE_SWIFT: u16 = 1 << 6;
+    pub const M_GRADLE: u16 = 1 << 7;
+    pub const M_GIT: u16 = 1 << 8;
+    pub const M_PYPROJECT: u16 = 1 << 9;
+    pub const M_POM_XML: u16 = 1 << 10;
+    pub const M_GO_MOD: u16 = 1 << 11;
+    pub const M_PUBSPEC: u16 = 1 << 12;
+    pub const M_CMAKE: u16 = 1 << 13;
+    pub const M_XCODEPROJ: u16 = 1 << 14;
+    pub const M_MAKEFILE: u16 = 1 << 15;
+
+    /// Marker bit for a directory entry name, if any.
+    #[inline]
+    pub fn marker(name: &[u8]) -> u16 {
+        // Cheap reject: markers start with one of these bytes.
+        match name.first() {
+            Some(b'C' | b'p' | b'P' | b'b' | b's' | b'.' | b'g' | b'r' | b'M' | b'G' | b'm') => {}
+            _ => {
+                return if name.ends_with(b".xcodeproj") { M_XCODEPROJ } else { 0 };
+            }
+        }
+        match name {
+            b"CACHEDIR.TAG" => M_CACHEDIR_TAG,
+            b"Cargo.toml" => M_CARGO_TOML,
+            b"package.json" => M_PACKAGE_JSON,
+            b"pyvenv.cfg" => M_PYVENV_CFG,
+            b"Package.swift" => M_PACKAGE_SWIFT,
+            b"build.gradle" | b"build.gradle.kts" | b"settings.gradle" | b"settings.gradle.kts" => M_GRADLE,
+            b".git" => M_GIT,
+            b"pyproject.toml" | b"setup.py" | b"requirements.txt" => M_PYPROJECT,
+            b"pom.xml" => M_POM_XML,
+            b"go.mod" => M_GO_MOD,
+            b"pubspec.yaml" => M_PUBSPEC,
+            b"CMakeLists.txt" => M_CMAKE,
+            b"Makefile" | b"GNUmakefile" | b"makefile" => M_MAKEFILE,
+            _ if name.ends_with(b".xcodeproj") => M_XCODEPROJ,
+            _ => 0,
+        }
+    }
 }
 
 /// One directory. 64 bytes; plain-old-data so snapshots are a memcpy.
@@ -210,6 +255,17 @@ impl Index {
     pub fn children(&self, id: u32) -> &[u32] {
         let (start, ids) = self.csr();
         &ids[start[id as usize] as usize..start[id as usize + 1] as usize]
+    }
+
+    /// All directories in the subtree rooted at `id` (including `id`), depth-first.
+    pub fn subtree(&self, id: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            out.push(n);
+            stack.extend_from_slice(self.children(n));
+        }
+        out
     }
 
     /// Find the node for an absolute path inside the index.

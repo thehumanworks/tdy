@@ -11,7 +11,16 @@ path = "src/main.rs"
 
 [dependencies]
 tidy-scan.workspace = true
+tidy-ops.workspace = true
+tidy-plan.workspace = true
+tidy-rules.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+libc.workspace = true
+ratatui = "0.30"
+crossterm = "0.29"
+
+[dev-dependencies]
+tempfile.workspace = true

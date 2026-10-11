@@ -25,7 +25,7 @@ fi
 cmds=("$TIDY scan -q $FIX")
 names=("tidy")
 command -v du   >/dev/null && { cmds+=("du -s $FIX");            names+=("du"); }
-command -v dust >/dev/null && { cmds+=("dust -d 0 $FIX");        names+=("dust"); }
+command -v dust >/dev/null && { cmds+=("dust -P -d 0 $FIX");     names+=("dust"); }
 command -v dua  >/dev/null && { cmds+=("dua aggregate $FIX");    names+=("dua"); }
 command -v gdu  >/dev/null && { cmds+=("gdu -snp $FIX");         names+=("gdu"); }
 
@@ -39,7 +39,7 @@ echo "peak RSS (KB):"
 TIMECMD=$(command -v gtime || command -v /usr/bin/time || true)
 for i in "${!cmds[@]}"; do
   if [ -n "$TIMECMD" ] && "$TIMECMD" --version >/dev/null 2>&1; then
-    rss=$("$TIMECMD" -f %M ${cmds[$i]} 2>&1 >/dev/null | tail -1)
+    tmp=$(mktemp); "$TIMECMD" -f %M -o "$tmp" ${cmds[$i]} >/dev/null 2>&1; rss=$(tail -1 "$tmp"); rm -f "$tmp"
   else
     # BSD time (macOS): -l prints "maximum resident set size" in bytes
     rss=$( { /usr/bin/time -l ${cmds[$i]} >/dev/null; } 2>&1 | awk '/maximum resident/ {print int($1/1024)}')

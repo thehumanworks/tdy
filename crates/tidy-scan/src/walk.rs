@@ -257,6 +257,7 @@ fn process<'s>(s: &rayon::Scope<'s>, job: Job, ctx: &'s Ctx) {
 
         let cpath = CStr::from_bytes_with_nul(&job.path).expect("nul-terminated job path");
         let res = reader.read(cpath, &mut |e: &EntryInfo<'_>| {
+            node.flags |= node_flags::marker(e.name);
             match e.kind {
                 Kind::Dir => {
                     if !ctx.cross_mounts && e.dev != ctx.root_dev {

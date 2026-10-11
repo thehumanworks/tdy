@@ -70,3 +70,16 @@ pub fn print_tree(rows: &[TreeRow]) {
         println!("{:>9} {:>4} {} {}{}", fmt::bytes(r.size), format!("{:.0}%", r.fraction * 100.0), bar(r.fraction, 12), dim(&prefix), name);
     }
 }
+
+fn paint(code: &str, s: &str) -> String {
+    if color() { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() }
+}
+pub fn green(s: &str) -> String {
+    paint("32", s)
+}
+pub fn yellow(s: &str) -> String {
+    paint("33", s)
+}
+pub fn red(s: &str) -> String {
+    paint("31", s)
+}

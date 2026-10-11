@@ -1,0 +1,20 @@
+[package]
+name = "tidy-rules"
+description = "Guards (L0), detectors (L1) and the policy file for Tidy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tidy-scan.workspace = true
+tidy-ops.workspace = true
+tidy-plan.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

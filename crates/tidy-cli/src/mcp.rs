@@ -112,6 +112,16 @@ pub fn serve() -> Result<()> {
     Ok(())
 }
 
+/// Plans are addressed by id (or unique prefix / "latest") only — never by
+/// a file path an agent could have written itself.
+fn plan_id(a: &Value) -> Result<Option<&str>> {
+    match a.get("plan").and_then(Value::as_str) {
+        None => Ok(None),
+        Some(p) if p == "latest" || (!p.is_empty() && p.len() <= 16 && p.bytes().all(|b| b.is_ascii_alphanumeric())) => Ok(Some(p)),
+        Some(p) => anyhow::bail!("invalid plan id `{p}`"),
+    }
+}
+
 fn s<'a>(a: &'a Value, k: &str) -> Option<&'a str> {
     a.get(k).and_then(Value::as_str)
 }
@@ -188,6 +198,11 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
         }
         "tidy_plan" => {
             let paths = strs(a, "paths");
+            // Paths are data, never flags: an agent must not be able to pass
+            // `--autonomous` or `--policy` through here.
+            if let Some(bad) = paths.iter().find(|p| p.starts_with('-') || p.is_empty()) {
+                anyhow::bail!("invalid path `{bad}`");
+            }
             let mut args = vec!["plan".to_string(), "--json".to_string()];
             if a.get("rules").and_then(Value::as_bool) == Some(false) {
                 args.push("--no-rules".into());
@@ -195,6 +210,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             if a.get("detectors").and_then(Value::as_bool) == Some(false) {
                 args.push("--no-detectors".into());
             }
+            args.push("--".into());
             args.extend(paths);
             let v = run_self(&args)?;
             let id = v.get("plan").and_then(Value::as_str).unwrap_or("latest").to_string();
@@ -208,13 +224,13 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             Ok(json!(plans.iter().map(|p| json!({"id": p.header.id, "created": p.header.created, "roots": p.header.roots, "counts": p.counts(), "note": p.header.note})).collect::<Vec<_>>()))
         }
         "tidy_show_plan" => {
-            let (plan, _) = store::load(s(a, "plan"))?;
+            let (plan, _) = store::load(plan_id(a)?)?;
             let st = s(a, "status");
             Ok(json!({"plan": plan.header.id, "mode": plan.header.mode, "counts": plan.counts(),
                       "entries": plan.entries.iter().filter(|e| st.is_none_or(|x| e.status.as_str().starts_with(&x[..x.len().min(5)]))).map(compact).collect::<Vec<_>>()}))
         }
         "tidy_reject" => {
-            let (mut plan, _) = store::load(s(a, "plan"))?;
+            let (mut plan, _) = store::load(plan_id(a)?)?;
             let ids = strs(a, "entries");
             let all = a.get("all").and_then(Value::as_bool) == Some(true);
             if ids.is_empty() && !all {
@@ -227,7 +243,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             Ok(json!({"plan": plan.header.id, "changed": n, "status": to}))
         }
         "tidy_apply" => {
-            let (mut plan, _) = store::load(s(a, "plan"))?;
+            let (mut plan, _) = store::load(plan_id(a)?)?;
             let wanted: Vec<String> = strs(a, "entries");
             let mut only = HashSet::new();
             let mut refused = Vec::new();
@@ -266,7 +282,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             Ok(json!({"plan": plan.header.id, "dry_run": dry, "report": r, "events": events, "not_approved": refused}))
         }
         "tidy_undo" => {
-            let (mut plan, _) = store::load(s(a, "plan"))?;
+            let (mut plan, _) = store::load(plan_id(a)?)?;
             let ids = strs(a, "entries");
             let only: Option<HashSet<String>> = if ids.is_empty() {
                 None
@@ -422,6 +438,9 @@ mod tests {
         let r = call("tidy_undo", &json!({"plan": plan})).unwrap();
         assert_eq!(r["report"]["undone"], 1);
         assert!(f.exists());
+        // flags can't be smuggled in as paths
+        assert!(call("tidy_plan", &json!({"paths": ["--autonomous", "/tmp"]})).is_err());
+        assert!(call("tidy_apply", &json!({"plan": "/tmp/evil.jsonl"})).is_err());
         // guards apply to proposals too
         let v = call("tidy_propose", &json!({"actions": [{"action": "delete", "path": "/usr/bin", "reason": "x"}]})).unwrap();
         assert!(v["plan"].is_null());

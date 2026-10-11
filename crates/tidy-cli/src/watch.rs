@@ -62,7 +62,7 @@ pub fn cmd_watch(c: WatchCmd) -> Result<()> {
     // removal actions keep the policy's full minimum age.
     let mut gc = policy.guard_config();
     gc.settle = c.settle.ceil() as i64;
-    let guards = Guards::new(gc);
+    let guards = Guards::new(gc.clone());
     let calib = Calibration::load();
     let mut roots: Vec<PathBuf> = c.paths.iter().filter_map(|p| std::fs::canonicalize(expand_tilde(p)).ok()).collect();
     let rules = l2::compile(&policy, &roots, built.as_ref().map(|b| b.id.as_str()), &calib);
@@ -162,7 +162,12 @@ pub fn cmd_watch(c: WatchCmd) -> Result<()> {
         let new = l2::entries(&run, policy.mode, built.as_ref().map(|b| b.id.as_str()), &mut taken);
         for o in &run.outcomes {
             if let l2::OutcomeKind::Kept { rule, p } = &o.kind {
-                println!("  {} {}  {}", ui::dim("keep"), display_path(&o.item.path), ui::dim(&format!("{rule} {p:.2}")));
+                println!(
+                    "  {} {}  {}",
+                    ui::dim("keep"),
+                    display_path(&o.item.path),
+                    ui::dim(&format!("{rule} {}", p.map(|p| format!("{p:.2}")).unwrap_or("unanswered".into())))
+                );
             }
         }
         if new.is_empty() {
@@ -180,7 +185,7 @@ pub fn cmd_watch(c: WatchCmd) -> Result<()> {
         store::save(&plan)?;
         // Autonomous: apply what the policy approved, right away.
         if plan.entries.iter().any(|e| ids.contains(&e.id) && e.status == Status::Approved) {
-            let guard = crate::plan_cmds::apply_guard(&policy);
+            let guard = crate::plan_cmds::apply_guard_with(gc.clone());
             let opts = ApplyOptions { dry_run: false, only: Some(ids), verify: true };
             let r = tidy_plan::apply(&mut plan, &opts, &guard, &mut |ev| {
                 if let tidy_plan::Event::Ok(e, m) = ev {

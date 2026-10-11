@@ -51,7 +51,7 @@ pub type Preflight<'a> = &'a dyn Fn(&Entry) -> std::result::Result<(), String>;
 
 pub fn apply(plan: &mut Plan, opts: &ApplyOptions, preflight: Preflight<'_>, on: &mut dyn FnMut(Event<'_>)) -> Result<Report> {
     let _lock = store::lock(&plan.header.id)?;
-    for m in recover(plan)? {
+    for m in recover_mode(plan, opts.dry_run)? {
         on(Event::Note(m));
     }
     let mut journal = if opts.dry_run { None } else { Some(Journal::open(&plan.header.id)?) };
@@ -128,12 +128,17 @@ pub fn apply(plan: &mut Plan, opts: &ApplyOptions, preflight: Preflight<'_>, on:
         // 4. journal + act
         let j = journal.as_mut().expect("journal");
         let action = e.action.as_str();
-        j.log(&e.id, Phase::Begin, action, &e.path, target.dst(), None)?;
+        let begin_state = match (&e.action, &target) {
+            (Action::Tag, _) => Some(serde_json::json!({"previous": tidy_ops::meta::get_tags_raw(&e.path)})),
+            (Action::Archive, Target::DuplicateOf(archive, _)) => Some(serde_json::json!({"archive": archive})),
+            _ => None,
+        };
+        j.log_full(&e.id, Phase::Begin, action, &e.path, target.dst(), None, begin_state)?;
         let res = execute(e, &target, j);
         let e = &mut plan.entries[i];
         match res {
             Ok(outcome) => {
-                j.log(&e.id, Phase::Done, action, &e.path, outcome.now_at.as_deref(), None)?;
+                j.log_full(&e.id, Phase::Done, action, &e.path, outcome.now_at.as_deref(), None, serde_json::to_value(&outcome).ok())?;
                 match e.action {
                     Action::Trash | Action::Quarantine | Action::Archive => report.parked += e.bytes.private,
                     _ => report.freed += outcome.freed,
@@ -268,7 +273,7 @@ fn execute(e: &Entry, t: &Target, j: &mut Journal) -> Result<Outcome> {
             if let Some(parent) = dst.parent() {
                 out.created = create_dirs(parent)?;
             }
-            move_any(&e.path, dst, e, j)?;
+            out.error = move_any(&e.path, dst, e, j)?;
             out.now_at = Some(dst.clone());
         }
         (Action::Dedupe, Target::Path(keeper)) => {
@@ -295,10 +300,11 @@ fn execute(e: &Entry, t: &Target, j: &mut Journal) -> Result<Outcome> {
             out.previous = Some(serde_json::json!({"archive": archive, "archive_bytes": bytes}));
         }
         (Action::Tag, _) => {
-            let before = tidy_ops::meta::get_tags(&e.path);
+            // Raw strings keep Finder colours on existing tags.
+            let before = tidy_ops::meta::get_tags_raw(&e.path);
             let mut after = before.clone();
             for t in &e.tags {
-                if !after.contains(t) {
+                if !after.iter().any(|x| tidy_ops::meta::tag_name(x) == t) {
                     after.push(t.clone());
                 }
             }
@@ -312,6 +318,11 @@ fn execute(e: &Entry, t: &Target, j: &mut Journal) -> Result<Outcome> {
             }
             copy_verified(&e.path, dst)?;
             out.now_at = Some(dst.clone());
+            // Undo deletes the copy only if it is still exactly what we made.
+            out.previous = tidy_ops::fingerprint(dst, None, false)
+                .ok()
+                .and_then(|f| serde_json::to_value(f).ok())
+                .map(|f| serde_json::json!({"copy": f}));
         }
         (a, _) => return Err(anyhow!("action `{}` is not supported by this version", a.as_str())),
     }
@@ -336,14 +347,19 @@ fn create_dirs(p: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 /// Rename when on the same volume; otherwise copy → verify → journal
 /// `copied` → remove source.
-fn move_any(src: &Path, dst: &Path, e: &Entry, j: &mut Journal) -> Result<()> {
+fn move_any(src: &Path, dst: &Path, e: &Entry, j: &mut Journal) -> Result<Option<String>> {
     match rename_noreplace(src, dst) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(None),
         Err(err) if err.raw_os_error() == Some(libc::EXDEV) => {
             copy_verified(src, dst)?;
+            // Durably on the destination before the source goes.
+            tidy_ops::fsops::sync_tree(dst)?;
             j.log(&e.id, Phase::Copied, e.action.as_str(), src, Some(dst), None)?;
-            remove_tree(src)?;
-            Ok(())
+            if let Err(err) = remove_tree(src) {
+                // The data is safe at the destination; report, don't fail.
+                return Ok(Some(format!("moved, but the source could not be fully removed: {err}")));
+            }
+            Ok(None)
         }
         Err(err) => Err(err.into()),
     }
@@ -417,7 +433,23 @@ pub fn undo(plan: &mut Plan, only: Option<&HashSet<String>>, on: &mut dyn FnMut(
         j.log(&e.id, Phase::UndoBegin, action, &now_at, Some(&e.path), None)?;
         let res: Result<()> = (|| {
             match e.action {
-                Action::Copy => remove_tree(&now_at)?,
+                Action::Copy => {
+                    let fp: Option<tidy_ops::Fingerprint> = e
+                        .outcome
+                        .as_ref()
+                        .and_then(|o| o.previous.as_ref())
+                        .and_then(|v| v.get("copy"))
+                        .and_then(|v| serde_json::from_value(v.clone()).ok());
+                    match fp {
+                        Some(fp) => {
+                            if let Err(d) = verify(&now_at, &fp) {
+                                return Err(anyhow!("the copy at {} {d}; not deleting it", now_at.display()));
+                            }
+                            remove_tree(&now_at)?
+                        }
+                        None => return Err(anyhow!("no record of the copy's state; not deleting {}", now_at.display())),
+                    }
+                }
                 Action::Archive => {
                     if let Some(parent) = e.path.parent() {
                         std::fs::create_dir_all(parent)?;
@@ -495,6 +527,12 @@ fn exists(p: &Path) -> bool {
 /// Reconcile entries whose last journal record is an unfinished phase.
 /// Returns human-readable notes for anything it changed.
 pub fn recover(plan: &mut Plan) -> Result<Vec<String>> {
+    recover_mode(plan, false)
+}
+
+/// With `dry_run`, only report what would be reconciled (nothing on disk
+/// or in the plan changes).
+pub fn recover_mode(plan: &mut Plan, dry_run: bool) -> Result<Vec<String>> {
     let recs = journal::read(&plan.header.id)?;
     if recs.is_empty() {
         return Ok(Vec::new());
@@ -503,23 +541,39 @@ pub fn recover(plan: &mut Plan) -> Result<Vec<String>> {
     for r in &recs {
         last.insert(r.entry.as_str(), r);
     }
+    if dry_run {
+        let n = plan
+            .entries
+            .iter()
+            .filter(|e| {
+                last.get(e.id.as_str()).is_some_and(|r| match r.phase {
+                    Phase::Begin | Phase::Copied | Phase::UndoBegin => true,
+                    Phase::Done => e.status != Status::Applied,
+                    Phase::Fail => e.status != Status::Failed,
+                    Phase::UndoDone => e.status != Status::Undone,
+                    _ => false,
+                })
+            })
+            .count();
+        return Ok(if n > 0 { vec![format!("{n} entries were interrupted; a real apply reconciles them first")] } else { vec![] });
+    }
     let mut notes = Vec::new();
     let mut j: Option<Journal> = None;
     let mut changed = false;
     for e in plan.entries.iter_mut() {
         let Some(r) = last.get(e.id.as_str()) else { continue };
+        let fail = |e: &mut Entry, why: &str| {
+            e.status = Status::Failed;
+            e.outcome = Some(Outcome { at: now(), error: Some(why.to_string()), ..Default::default() });
+        };
         let note = match r.phase {
             Phase::Begin => {
                 let to = r.to.as_deref();
+                let state = r.outcome.clone();
                 match (e.action, to) {
                     (Action::Delete, _) => {
                         if exists(&e.path) {
-                            e.status = Status::Failed;
-                            e.outcome = Some(Outcome {
-                                at: now(),
-                                error: Some("interrupted while deleting; partially removed".into()),
-                                ..Default::default()
-                            });
+                            fail(e, "interrupted while deleting; partially removed");
                             "interrupted delete left a partial tree".to_string()
                         } else {
                             e.status = Status::Applied;
@@ -527,46 +581,80 @@ pub fn recover(plan: &mut Plan) -> Result<Vec<String>> {
                             "delete had completed".to_string()
                         }
                     }
+                    (Action::Tag, _) => {
+                        // Tags may or may not have been written; restoring the
+                        // captured previous set is correct either way.
+                        e.status = Status::Applied;
+                        e.outcome = Some(Outcome {
+                            at: now(),
+                            now_at: Some(e.path.clone()),
+                            previous: state.and_then(|v| v.get("previous").cloned()),
+                            ..Default::default()
+                        });
+                        "tagging was interrupted; undo restores the previous tags".to_string()
+                    }
+                    (Action::Dedupe | Action::Compress, _) => {
+                        // Both are atomic swaps of identical content: either
+                        // state is a valid file. Mark failed for a re-plan.
+                        fail(e, "interrupted; the file is intact (re-plan to retry)");
+                        "interrupted dedupe/compress left the file intact".to_string()
+                    }
                     (_, Some(to)) => {
                         let partial = partial_path(to);
                         if exists(&partial) {
                             let _ = remove_tree(&partial);
                         }
+                        let archive = state.as_ref().and_then(|v| v.get("archive")).and_then(|a| a.as_str()).map(PathBuf::from);
                         match (exists(&e.path), exists(to)) {
                             (false, true) => {
                                 e.status = Status::Applied;
-                                e.outcome = Some(Outcome { at: now(), now_at: Some(to.to_path_buf()), ..Default::default() });
+                                e.outcome = Some(Outcome {
+                                    at: now(),
+                                    now_at: Some(to.to_path_buf()),
+                                    previous: archive.map(|a| serde_json::json!({"archive": a})),
+                                    ..Default::default()
+                                });
                                 "had completed".to_string()
                             }
                             (true, false) => {
+                                // Our own half-made archive is safe to discard; the original is intact.
+                                if let Some(a) = archive {
+                                    let _ = std::fs::remove_file(a.with_extension("zst.tidy-partial"));
+                                    let _ = std::fs::remove_file(&a);
+                                }
                                 e.status = Status::Approved;
                                 "had not started; will retry".to_string()
                             }
                             _ => {
-                                e.status = Status::Failed;
-                                e.outcome = Some(Outcome {
-                                    at: now(),
-                                    error: Some("interrupted; both source and destination exist".into()),
-                                    ..Default::default()
-                                });
+                                fail(e, "interrupted; both source and destination exist");
                                 "interrupted with both copies present".to_string()
                             }
                         }
                     }
                     _ => {
-                        e.status = Status::Failed;
+                        fail(e, "interrupted");
                         "interrupted".to_string()
                     }
                 }
             }
             Phase::Copied => {
-                // Copy is complete and verified; finish removing the source.
-                if exists(&e.path) {
-                    remove_tree(&e.path)?;
+                // The copy was verified and synced before `copied` was
+                // journalled — but only remove the source if the
+                // destination is still there and still matches.
+                let dest_ok = r.to.as_deref().is_some_and(|to| {
+                    tidy_ops::fingerprint(to, None, false).is_ok_and(|f| f.size == e.fingerprint.size && f.files == e.fingerprint.files)
+                });
+                if dest_ok {
+                    if exists(&e.path) {
+                        remove_tree(&e.path)?;
+                    }
+                    e.status = Status::Applied;
+                    e.outcome = Some(Outcome { at: now(), now_at: r.to.clone(), ..Default::default() });
+                    "finished a cross-volume move".to_string()
+                } else {
+                    fail(e, "interrupted cross-volume move: destination missing or incomplete; source left in place");
+                    "cross-volume move interrupted; destination not intact, source kept".to_string()
                 }
-                e.status = Status::Applied;
-                e.outcome = Some(Outcome { at: now(), now_at: r.to.clone(), ..Default::default() });
-                "finished a cross-volume move".to_string()
             }
             Phase::UndoBegin => {
                 let now_at = &r.from;
@@ -581,8 +669,11 @@ pub fn recover(plan: &mut Plan) -> Result<Vec<String>> {
             // Terminal phases the plan file missed (crash between journal and save).
             Phase::Done if e.status != Status::Applied => {
                 e.status = Status::Applied;
-                let freed = if e.action == Action::Delete { e.bytes.private } else { 0 };
-                e.outcome = Some(Outcome { at: r.ts, now_at: r.to.clone(), freed, ..Default::default() });
+                let full: Option<Outcome> = r.outcome.clone().and_then(|v| serde_json::from_value(v).ok());
+                e.outcome = Some(full.unwrap_or_else(|| {
+                    let freed = if e.action == Action::Delete { e.bytes.private } else { 0 };
+                    Outcome { at: r.ts, now_at: r.to.clone(), freed, ..Default::default() }
+                }));
                 "completed before the plan was saved".to_string()
             }
             Phase::Fail if e.status != Status::Failed => {

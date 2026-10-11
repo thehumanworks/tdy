@@ -222,6 +222,21 @@ pub fn bplist_encode_strings(items: &[String]) -> Vec<u8> {
     out
 }
 
+/// Raw tag strings as stored (macOS keeps "Name\n<colour>"); round-trips
+/// through [`set_tags`] without losing colours.
+pub fn get_tags_raw(p: &Path) -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        xattr(p, "com.apple.metadata:_kMDItemUserTags").map(|v| bplist_strings(&v)).unwrap_or_default()
+    } else {
+        get_tags(p)
+    }
+}
+
+/// Tag name without the Finder colour suffix.
+pub fn tag_name(raw: &str) -> &str {
+    raw.split('\n').next().unwrap_or(raw)
+}
+
 /// Finder tags (macOS) or `user.xdg.tags` (Linux, comma-separated).
 pub fn get_tags(p: &Path) -> Vec<String> {
     if cfg!(target_os = "macos") {

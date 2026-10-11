@@ -212,7 +212,9 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
         );
     }
     let verdict = match kind {
-        OutcomeKind::Kept { rule, p } => format!("kept by {rule} ({p:.2})"),
+        OutcomeKind::Kept { rule, p } => {
+            format!("kept by {rule} ({})", p.map(|p| format!("{p:.2}")).unwrap_or("unanswered — kept to be safe".into()))
+        }
         OutcomeKind::Propose { entries } => entries
             .iter()
             .map(|e| {

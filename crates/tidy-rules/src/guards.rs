@@ -217,8 +217,42 @@ fn ext_of(p: &Path) -> Option<&str> {
 }
 
 impl Guards {
-    pub fn new(cfg: GuardConfig) -> Self {
-        Guards { cfg, home: home_dir(), cloud: probe::cloud_roots(), open: OnceLock::new(), git: Mutex::new(HashMap::new()) }
+    pub fn new(mut cfg: GuardConfig) -> Self {
+        // Plans hold fully resolved paths, so compare against resolved roots
+        // (e.g. $HOME behind a symlink, /tmp → /private/tmp on macOS).
+        cfg.protect = cfg.protect.iter().map(|p| canonical(p)).collect();
+        cfg.destinations = cfg.destinations.iter().map(|p| canonical(p)).collect();
+        let cloud = probe::cloud_roots().iter().map(|p| canonical(p)).collect();
+        Guards { cfg, home: canonical(&home_dir()), cloud, open: OnceLock::new(), git: Mutex::new(HashMap::new()) }
+    }
+
+    /// Where a move/copy/rename may put things: never into system
+    /// locations, credential folders, application data or inside packages.
+    pub fn check_destination(&self, dest: &Path) -> Result<(), Block> {
+        let d = canonical_parent(dest);
+        let block = |guard: &'static str, reason: String| Err(Block { guard, reason });
+        for pre in SYSTEM_PREFIXES {
+            if d.starts_with(pre) && !d.starts_with(&self.home) {
+                return block("destination", format!("into system location {pre}"));
+            }
+        }
+        if let Ok(rel) = d.strip_prefix(&self.home) {
+            for s in SECRET_PATHS.iter().chain(APP_DATA) {
+                if rel.starts_with(s) {
+                    return block("destination", format!("into ~/{s}"));
+                }
+            }
+        }
+        let mut cur = d.parent();
+        while let Some(c) = cur {
+            if let Some(e) = ext_of(c)
+                && PACKAGE_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e))
+            {
+                return block("destination", format!("inside package {}", c.display()));
+            }
+            cur = c.parent();
+        }
+        Ok(())
     }
 
     fn open_files(&self) -> &OpenFiles {
@@ -234,6 +268,8 @@ impl Guards {
     /// inside the candidate (from the index) when known; otherwise a quick
     /// scan finds them.
     pub fn check(&self, path: &Path, action: Action, facts: &Facts, git_roots_inside: Option<&[PathBuf]>) -> Result<(), Block> {
+        let resolved = canonical_parent(path);
+        let path = resolved.as_path();
         let block = |guard: &'static str, reason: String| Err(Block { guard, reason });
         let destructive = action.destructive();
 
@@ -317,6 +353,10 @@ impl Guards {
         if !destructive {
             return Ok(());
         }
+        // another filesystem mounted inside: never delete/move across it
+        if let Some(m) = probe::mounts_under(path).into_iter().next() {
+            return block("mount", format!("{} is a mount point inside it", m.display()));
+        }
         // age
         let removal = matches!(action, Action::Delete | Action::Trash | Action::Quarantine | Action::Archive | Action::Dedupe);
         let floor = if removal { self.cfg.min_age } else { self.cfg.settle };
@@ -357,6 +397,39 @@ impl Guards {
             }
         }
         Ok(())
+    }
+}
+
+/// `p` with symlinks resolved; for paths that do not exist, the nearest
+/// existing ancestor is resolved and the rest appended.
+pub fn canonical(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    let mut tail = Vec::new();
+    let mut cur = p;
+    while let Some(parent) = cur.parent() {
+        if let Some(n) = cur.file_name() {
+            tail.push(n.to_os_string());
+        }
+        if let Ok(c) = std::fs::canonicalize(parent) {
+            let mut out = c;
+            for t in tail.iter().rev() {
+                out.push(t);
+            }
+            return out;
+        }
+        cur = parent;
+    }
+    p.to_path_buf()
+}
+
+/// Resolve symlinks in the parent only: the final component is the item
+/// itself (a symlink entry stays a symlink, not its target).
+pub fn canonical_parent(p: &Path) -> PathBuf {
+    match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => canonical(parent).join(name),
+        _ => p.to_path_buf(),
     }
 }
 

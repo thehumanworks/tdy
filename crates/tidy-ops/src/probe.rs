@@ -169,3 +169,59 @@ pub fn cloud_roots() -> Vec<PathBuf> {
     v.retain(|p| p.exists());
     v
 }
+
+/// Mount points strictly below `p` (from the kernel's mount table).
+pub fn mounts_under(p: &Path) -> Vec<PathBuf> {
+    let Ok(base) = std::fs::canonicalize(p) else { return vec![] };
+    mount_points().into_iter().filter(|m| m != &base && m.starts_with(&base)).collect()
+}
+
+/// All current mount points.
+pub fn mount_points() -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        // /proc/self/mounts: "dev mountpoint fstype opts 0 0", octal-escaped.
+        let Ok(text) = std::fs::read_to_string("/proc/self/mounts") else { return vec![] };
+        return text
+            .lines()
+            .filter_map(|l| l.split(' ').nth(1))
+            .map(|m| {
+                let mut out = Vec::new();
+                let b = m.as_bytes();
+                let mut i = 0;
+                while i < b.len() {
+                    if b[i] == b'\\' && i + 3 < b.len() {
+                        if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 4]).unwrap_or("x"), 8) {
+                            out.push(v);
+                            i += 4;
+                            continue;
+                        }
+                    }
+                    out.push(b[i]);
+                    i += 1;
+                }
+                tidy_scan::path::bytes_to_path(&out)
+            })
+            .collect();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf: *mut libc::statfs = std::ptr::null_mut();
+        let n = unsafe { libc::getmntinfo(&mut buf, libc::MNT_NOWAIT) };
+        if n <= 0 || buf.is_null() {
+            return vec![];
+        }
+        let s = unsafe { std::slice::from_raw_parts(buf, n as usize) };
+        return s
+            .iter()
+            .map(|f| {
+                let c = unsafe { std::ffi::CStr::from_ptr(f.f_mntonname.as_ptr()) };
+                tidy_scan::path::bytes_to_path(c.to_bytes())
+            })
+            .collect();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        vec![]
+    }
+}

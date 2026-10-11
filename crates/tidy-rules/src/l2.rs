@@ -285,9 +285,18 @@ pub struct Outcome {
 #[derive(Clone, Debug)]
 pub enum OutcomeKind {
     NoRule,
-    Kept { rule: String, p: f64 },
-    Propose { entries: Vec<Proposal> },
-    Blocked { rule: String, why: String },
+    /// `p` is None when the judge did not answer: protection fails safe.
+    Kept {
+        rule: String,
+        p: Option<f64>,
+    },
+    Propose {
+        entries: Vec<Proposal>,
+    },
+    Blocked {
+        rule: String,
+        why: String,
+    },
     Error(String),
 }
 
@@ -317,10 +326,11 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
             ps.push((r.rule.id.clone(), *p));
         }
     }
-    // keep rules veto first, regardless of order
+    // keep rules veto first, regardless of order; an unanswered keep rule
+    // (refusal, omitted question, no judge) protects rather than lapses
     for (r, p) in rules.iter().zip(&probs) {
-        if r.is_keep() && p.is_some_and(|p| p >= r.threshold) {
-            return (OutcomeKind::Kept { rule: r.rule.id.clone(), p: p.unwrap() }, ps);
+        if r.is_keep() && (p.is_some_and(|p| p >= r.threshold) || p.is_none()) {
+            return (OutcomeKind::Kept { rule: r.rule.id.clone(), p: *p }, ps);
         }
     }
     let regenerable = ans.get("safety.regenerable").and_then(|a| a.p());
@@ -366,9 +376,16 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
                     loss.unwrap_or(3.0)
                 ));
             }
-            if loss.is_some_and(|l| l >= 2.5) {
-                uncertain = true;
-                note = Some(format!("judge rates losing it as costly (loss {:.1}/3)", loss.unwrap()));
+            match loss {
+                Some(l) if l >= 2.5 => {
+                    uncertain = true;
+                    note = Some(format!("judge rates losing it as costly (loss {l:.1}/3)"));
+                }
+                None => {
+                    uncertain = true;
+                    note = Some("judge gave no loss estimate".into());
+                }
+                _ => {}
             }
         }
         let mut dest = None;

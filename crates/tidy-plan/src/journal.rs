@@ -33,6 +33,10 @@ pub struct Record {
     pub to: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Full outcome (on `done`) or undo state captured before acting (on
+    /// `begin`, e.g. previous tags), so recovery can rebuild exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<serde_json::Value>,
 }
 
 pub struct Journal {
@@ -68,6 +72,20 @@ impl Journal {
         to: Option<&std::path::Path>,
         note: Option<String>,
     ) -> Result<()> {
+        self.log_full(entry, phase, action, from, to, note, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_full(
+        &mut self,
+        entry: &str,
+        phase: Phase,
+        action: &str,
+        from: &std::path::Path,
+        to: Option<&std::path::Path>,
+        note: Option<String>,
+        outcome: Option<serde_json::Value>,
+    ) -> Result<()> {
         self.write(&Record {
             ts: tidy_scan::fmt::now_secs(),
             entry: entry.to_string(),
@@ -76,6 +94,7 @@ impl Journal {
             from: from.to_path_buf(),
             to: to.map(|p| p.to_path_buf()),
             note,
+            outcome,
         })
     }
 }

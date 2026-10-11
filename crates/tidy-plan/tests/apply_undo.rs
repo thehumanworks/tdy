@@ -297,3 +297,62 @@ fn editor_roundtrip() {
     assert_eq!(plan.entries[2].status, Status::Rejected);
     assert!(tidy_plan::review::parse_editor(&mut plan, "frobnicate abcd\n").is_err());
 }
+
+#[test]
+fn undo_of_copy_refuses_when_copy_changed() {
+    let t = tempfile::tempdir_in(home()).unwrap();
+    let root = t.path().join("tree");
+    fixture(&root);
+    let mut taken = HashSet::new();
+    let mut plan = new_plan(&root, vec![entry(&root.join("photos"), Action::Copy, Some(root.join("backup/photos")), &mut taken)]);
+    let r = apply(&mut plan, &ApplyOptions { verify: true, ..Default::default() }, &no_guard, &mut |_| {}).unwrap();
+    assert_eq!(r.applied, 1);
+    fs::write(root.join("backup/photos/new-work.txt"), b"precious").unwrap();
+    let r = undo(&mut plan, None, &mut |_| {}).unwrap();
+    assert_eq!(r.undone, 0);
+    assert_eq!(r.failed, 1);
+    assert!(root.join("backup/photos/new-work.txt").exists());
+}
+
+#[test]
+fn interrupted_cross_volume_move_with_missing_destination_keeps_source() {
+    let t = tempfile::tempdir_in(home()).unwrap();
+    let root = t.path().join("tree");
+    fixture(&root);
+    let mut taken = HashSet::new();
+    let src = root.join("downloads/Figma.dmg");
+    let mut plan = new_plan(&root, vec![entry(&src, Action::Move, Some(root.join("elsewhere/Figma.dmg")), &mut taken)]);
+    let id = plan.header.id.clone();
+    {
+        let mut j = Journal::open(&id).unwrap();
+        let eid = plan.entries[0].id.clone();
+        j.log(&eid, Phase::Begin, "move", &src, Some(&root.join("elsewhere/Figma.dmg")), None).unwrap();
+        j.log(&eid, Phase::Copied, "move", &src, Some(&root.join("elsewhere/Figma.dmg")), None).unwrap();
+        // destination vanished (unmounted disk) before the source was removed
+    }
+    let notes = tidy_plan::recover(&mut plan).unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(src.exists(), "source must be kept");
+    assert_eq!(plan.entries[0].status, Status::Failed);
+}
+
+#[test]
+fn dry_run_does_not_recover() {
+    let t = tempfile::tempdir_in(home()).unwrap();
+    let root = t.path().join("tree");
+    fixture(&root);
+    let mut taken = HashSet::new();
+    let mut plan = new_plan(&root, vec![entry(&root.join("proj/target"), Action::Delete, None, &mut taken)]);
+    let id = plan.header.id.clone();
+    Journal::open(&id).unwrap().log(&plan.entries[0].id, Phase::Begin, "delete", &root.join("proj/target"), None, None).unwrap();
+    let mut notes = Vec::new();
+    apply(&mut plan, &ApplyOptions { verify: true, dry_run: true, ..Default::default() }, &no_guard, &mut |e| {
+        if let Event::Note(n) = e {
+            notes.push(n);
+        }
+    })
+    .unwrap();
+    assert!(notes[0].contains("interrupted"));
+    assert_eq!(plan.entries[0].status, Status::Approved);
+    assert!(root.join("proj/target").exists());
+}

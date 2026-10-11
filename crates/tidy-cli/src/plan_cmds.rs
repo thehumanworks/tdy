@@ -346,15 +346,53 @@ fn edit_in_editor(plan: &mut tidy_plan::Plan) -> Result<()> {
 }
 
 /// Apply-time guard: re-run L0 guards with fresh facts.
-pub fn apply_guard(policy: &Policy) -> impl Fn(&tidy_plan::Entry) -> Result<(), String> + '_ {
-    let guards = Guards::new(policy.guard_config());
+pub fn apply_guard(policy: &Policy) -> impl Fn(&tidy_plan::Entry) -> Result<(), String> {
+    apply_guard_with(policy.guard_config())
+}
+
+/// Apply-time guard: re-runs every L0 guard with fresh facts — the
+/// fingerprint's newest mtime (verified unchanged since planning), current
+/// file flags (cloud placeholder, locked) — and checks move destinations.
+pub fn apply_guard_with(cfg: tidy_rules::GuardConfig) -> impl Fn(&tidy_plan::Entry) -> Result<(), String> {
+    let guards = Guards::new(cfg);
     move |e: &tidy_plan::Entry| {
-        let facts =
-            Facts { mtime_max: Some(e.fingerprint.mtime), flags: 0, regenerable: e.source.layer == tidy_plan::Layer::L1, min_age: None };
-        // Respect the age the plan was made under: the fingerprint check already
-        // guarantees nothing changed since, so only re-check structural guards.
-        let facts = Facts { mtime_max: facts.mtime_max.map(|_| 0), ..facts };
-        guards.check(&e.path, e.action, &facts, None).map_err(|b| b.to_string())
+        let facts = Facts {
+            mtime_max: Some(e.fingerprint.mtime),
+            flags: current_flags(&e.path),
+            regenerable: e.source.layer == tidy_plan::Layer::L1,
+            min_age: None,
+        };
+        guards.check(&e.path, e.action, &facts, None).map_err(|b| b.to_string())?;
+        if let Some(d) = &e.dest
+            && matches!(e.action, Action::Move | Action::Copy | Action::Rename | Action::Archive)
+        {
+            guards.check_destination(d).map_err(|b| b.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+/// Entry flags (dataless placeholder, immutable) for a path right now.
+fn current_flags(p: &std::path::Path) -> u32 {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        use tidy_scan::entry::flags;
+        let Ok(md) = std::fs::symlink_metadata(p) else { return 0 };
+        let f = md.st_flags();
+        let mut out = 0;
+        if f & 0x4000_0000 != 0 {
+            out |= flags::DATALESS;
+        }
+        if f & (0x0000_0002 | 0x0002_0000) != 0 {
+            out |= flags::IMMUTABLE;
+        }
+        return out;
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = p;
+        0
     }
 }
 

@@ -218,3 +218,52 @@ fn templates() {
     assert_eq!(l2::expand_template("~/Pictures/{mtime:%Y}/{mtime:%m - %B}", &it, None), "~/Pictures/2021/03 - March");
     assert_eq!(l2::expand_template("{stem}.{ext}", &it, None), "IMG_0001.heic");
 }
+
+/// A judge that refuses every question about protection.
+struct RefuseKeep;
+impl Judge for RefuseKeep {
+    fn id(&self) -> String {
+        "refuse".into()
+    }
+    fn caps(&self) -> Caps {
+        Caps { images: false, max_images: 0, max_questions: 64 }
+    }
+    fn decide(&self, req: &Request) -> Result<Response, JudgeError> {
+        let mut r = Response::default();
+        for q in &req.questions {
+            let a = if q.name.starts_with("protect") { Answer::Refusal } else { Answer::Predicate { p: 0.99 } };
+            r.answers.insert(q.name.clone(), a);
+        }
+        Ok(r)
+    }
+}
+
+#[test]
+fn unanswered_keep_rule_protects() {
+    let t = tempfile::tempdir().unwrap();
+    let dl = t.path().join("Downloads");
+    fs::create_dir_all(&dl).unwrap();
+    fs::write(dl.join("2019-tax-return.txt"), b"income").unwrap();
+    old(&dl.join("2019-tax-return.txt"));
+    let policy: Policy = toml::from_str(&format!(
+        r#"
+[[rule]]
+id = "protect.tax"
+action = "keep"
+scope = ["{dl}"]
+when.any = ["tax documents"]
+
+[[rule]]
+id = "old-text"
+action = "trash"
+scope = ["{dl}"]
+filter = {{ ext = ["txt"] }}
+"#,
+        dl = dl.display()
+    ))
+    .unwrap();
+    let guards = Guards::new(GuardConfig { min_age: 0, ..Default::default() });
+    let rules = l2::compile(&policy, &[t.path().to_path_buf()], None, &Calibration::default());
+    let run = l2::run(&policy, &rules, Some(&RefuseKeep), &guards, 2, &|_, _| {}).unwrap();
+    assert!(matches!(&run.outcomes[0].kind, OutcomeKind::Kept { p: None, .. }), "{:?}", run.outcomes[0].kind);
+}

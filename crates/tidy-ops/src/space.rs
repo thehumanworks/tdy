@@ -136,6 +136,15 @@ pub fn clone_supported(p: &Path) -> bool {
 /// metadata, then atomically rename over it. Linux: `FIDEDUPERANGE`, where
 /// the kernel itself verifies the bytes are equal and shares extents in place.
 pub fn dedupe(keeper: &Path, dup: &Path) -> io::Result<()> {
+    // Both must be distinct regular files: never follow a symlink, never
+    // "dedupe" a file against itself.
+    let (mk, md0) = (std::fs::symlink_metadata(keeper)?, std::fs::symlink_metadata(dup)?);
+    if !mk.file_type().is_file() || !md0.file_type().is_file() {
+        return Err(io::Error::other("dedupe needs two regular files (no symlinks)"));
+    }
+    if mk.dev() == md0.dev() && mk.ino() == md0.ino() {
+        return Err(io::Error::other("keeper and duplicate are the same file"));
+    }
     #[cfg(target_os = "macos")]
     {
         unsafe extern "C" {
@@ -295,16 +304,18 @@ pub fn transparent_compress(p: &Path) -> io::Result<()> {
     if cfg!(target_os = "macos") {
         let tmp = p.with_file_name(format!(".{}.tidy-compress", p.file_name().unwrap_or_default().to_string_lossy()));
         let _ = crate::fsops::remove_tree(&tmp);
+        let before = crate::fingerprint::fingerprint(p, None, true)?;
         let ok = std::process::Command::new("ditto").arg("--hfsCompression").arg(p).arg(&tmp).status()?.success();
         if !ok {
             let _ = crate::fsops::remove_tree(&tmp);
             return Err(io::Error::other("ditto --hfsCompression failed"));
         }
-        let a = crate::fingerprint::fingerprint(p, None, false)?;
-        let b = crate::fingerprint::fingerprint(&tmp, None, false)?;
-        if a.size != b.size || a.files != b.files {
+        // Abort if the original changed while ditto copied it (writes would be lost).
+        let after = crate::fingerprint::fingerprint(p, None, true)?;
+        let copy = crate::fingerprint::fingerprint(&tmp, None, true)?;
+        if before != after || copy.size != after.size || copy.files != after.files || copy.hash != after.hash {
             let _ = crate::fsops::remove_tree(&tmp);
-            return Err(io::Error::other("compressed copy differs; aborted"));
+            return Err(io::Error::other("source changed during compression, or the compressed copy differs; aborted"));
         }
         swap(&tmp, p)?;
         return crate::fsops::remove_tree(&tmp);

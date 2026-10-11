@@ -4,8 +4,8 @@ mod plan_cmds;
 mod scan_cmds;
 mod space_cmds;
 mod tui;
-mod watch;
 mod ui;
+mod watch;
 
 use clap::{Parser, Subcommand};
 

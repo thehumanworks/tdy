@@ -384,12 +384,8 @@ impl Index {
             fraction: node.size(k) as f64 / total as f64,
         });
         // Merge child dirs and files, sorted by size desc.
-        let mut kids: Vec<(u64, bool, u32)> = self
-            .children(id)
-            .iter()
-            .filter(|c| dirs.contains(c))
-            .map(|&c| (self.nodes[c as usize].size(k), true, c))
-            .collect();
+        let mut kids: Vec<(u64, bool, u32)> =
+            self.children(id).iter().filter(|c| dirs.contains(c)).map(|&c| (self.nodes[c as usize].size(k), true, c)).collect();
         if let Some(fs) = files.get(&id) {
             kids.extend(fs.iter().map(|&fi| (self.top_files[fi as usize].size(k), false, fi)));
         }

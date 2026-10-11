@@ -5,10 +5,10 @@ use std::fs;
 use std::path::Path;
 use tidy_judge::{Answer, Caps, Judge, JudgeError, QKind, Request, Response};
 use tidy_plan::{Action, Mode};
+use tidy_rules::Policy;
 use tidy_rules::calib::Calibration;
 use tidy_rules::guards::{GuardConfig, Guards};
 use tidy_rules::l2::{self, OutcomeKind};
-use tidy_rules::Policy;
 
 /// Answers predicates from (question-name substring, item-name substring) → p.
 struct Script(Vec<(&'static str, &'static str, f64)>);
@@ -26,7 +26,8 @@ impl Judge for Script {
         for q in &req.questions {
             let a = match &q.kind {
                 QKind::Predicate => {
-                    let p = self.0.iter().find(|(qn, item, _)| q.name.contains(qn) && name_line.contains(item)).map(|x| x.2).unwrap_or(0.01);
+                    let p =
+                        self.0.iter().find(|(qn, item, _)| q.name.contains(qn) && name_line.contains(item)).map(|x| x.2).unwrap_or(0.01);
                     Answer::Predicate { p }
                 }
                 QKind::Score { levels } => {
@@ -37,7 +38,11 @@ impl Judge for Script {
                     Answer::Score { score: idx as f64, probs, confidence: Some(0.9) }
                 }
                 QKind::Choice { options } => {
-                    let pick = options.iter().find(|(v, _)| name_line.to_lowercase().contains(&v.to_lowercase())).map(|o| o.0.clone()).unwrap_or("none".into());
+                    let pick = options
+                        .iter()
+                        .find(|(v, _)| name_line.to_lowercase().contains(&v.to_lowercase()))
+                        .map(|o| o.0.clone())
+                        .unwrap_or("none".into());
                     Answer::Choice { probs: vec![(pick.clone(), 0.9)], choice: pick, confidence: Some(0.9) }
                 }
             };

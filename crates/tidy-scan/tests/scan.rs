@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use tidy_scan::{scan, ScanOptions, SizeKind};
+use tidy_scan::{ScanOptions, SizeKind, scan};
 
 fn write(p: &Path, n: usize) {
     let mut f = fs::File::create(p).unwrap();

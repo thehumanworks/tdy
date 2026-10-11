@@ -1,7 +1,7 @@
 //! Linux reader: `openat` + `getdents64` + `statx` relative to the open
 //! directory fd, so the kernel never re-resolves the full path per file.
 
-use crate::entry::{flags, EntryInfo, Kind, ReadOptions};
+use crate::entry::{EntryInfo, Kind, ReadOptions, flags};
 use std::ffi::CStr;
 use std::io;
 
@@ -22,21 +22,15 @@ impl Reader {
     /// `f` for each. `.` and `..` are skipped. Entries that vanish between
     /// `getdents64` and `statx` are skipped silently.
     pub fn read(&mut self, path: &CStr, f: &mut dyn FnMut(&EntryInfo<'_>)) -> io::Result<()> {
-        let fd = unsafe {
-            libc::open(
-                path.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NOCTTY,
-            )
-        };
+        let fd =
+            unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NOCTTY) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
         let _guard = FdGuard(fd);
         let private = self.opts.private;
         loop {
-            let n = unsafe {
-                libc::syscall(libc::SYS_getdents64, fd, self.buf.as_mut_ptr() as *mut libc::c_void, DIRENT_BUF)
-            };
+            let n = unsafe { libc::syscall(libc::SYS_getdents64, fd, self.buf.as_mut_ptr() as *mut libc::c_void, DIRENT_BUF) };
             if n < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -62,8 +56,7 @@ impl Reader {
                         fd,
                         name_ptr,
                         libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_DONT_SYNC | libc::AT_NO_AUTOMOUNT,
-                        libc::STATX_TYPE | libc::STATX_SIZE | libc::STATX_BLOCKS | libc::STATX_INO
-                            | libc::STATX_NLINK | libc::STATX_MTIME,
+                        libc::STATX_TYPE | libc::STATX_SIZE | libc::STATX_BLOCKS | libc::STATX_INO | libc::STATX_NLINK | libc::STATX_MTIME,
                         &mut stx,
                     )
                 };
@@ -84,11 +77,8 @@ impl Reader {
                 if stx.stx_attributes & (libc::STATX_ATTR_IMMUTABLE as u64) != 0 {
                     fl |= flags::IMMUTABLE;
                 }
-                let priv_bytes = if private && kind == Kind::File && alloc > 0 {
-                    fiemap_private(fd, name, alloc, &mut self.fiemap)
-                } else {
-                    None
-                };
+                let priv_bytes =
+                    if private && kind == Kind::File && alloc > 0 { fiemap_private(fd, name, alloc, &mut self.fiemap) } else { None };
                 f(&EntryInfo {
                     name: nb,
                     kind,

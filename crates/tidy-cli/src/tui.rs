@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
 use tidy_plan::review::Filter;
-use tidy_plan::{store, Plan, Status};
+use tidy_plan::{Plan, Status, store};
 use tidy_scan::{fmt, path::display_path};
 
 struct App<'a> {
@@ -31,7 +31,9 @@ impl App<'_> {
             .iter()
             .enumerate()
             .filter(|(_, e)| self.base.matches(e))
-            .filter(|(_, e)| q.is_empty() || e.path.to_string_lossy().to_lowercase().contains(&q) || e.source.rule.to_lowercase().contains(&q))
+            .filter(|(_, e)| {
+                q.is_empty() || e.path.to_string_lossy().to_lowercase().contains(&q) || e.source.rule.to_lowercase().contains(&q)
+            })
             .map(|(i, _)| i)
             .collect();
         let sel = self.state.selected().unwrap_or(0).min(self.view.len().saturating_sub(1));
@@ -44,11 +46,11 @@ impl App<'_> {
     }
 
     fn set(&mut self, st: Status) {
-        if let Some(e) = self.current() {
-            if e.status.reviewable() {
-                tidy_plan::review::set_one(e, st, "human");
-                self.dirty = true;
-            }
+        if let Some(e) = self.current()
+            && e.status.reviewable()
+        {
+            tidy_plan::review::set_one(e, st, "human");
+            self.dirty = true;
         }
         self.down();
     }
@@ -81,7 +83,17 @@ impl App<'_> {
 }
 
 pub fn review(plan: &mut Plan, base: &Filter) -> Result<()> {
-    let mut app = App { plan, base: base.clone(), query: String::new(), typing: false, view: vec![], state: TableState::default(), detail: false, dirty: false, msg: String::new() };
+    let mut app = App {
+        plan,
+        base: base.clone(),
+        query: String::new(),
+        typing: false,
+        view: vec![],
+        state: TableState::default(),
+        detail: false,
+        dirty: false,
+        msg: String::new(),
+    };
     app.refilter();
     let mut terminal = ratatui::init();
     let res = run(&mut terminal, &mut app);
@@ -227,52 +239,71 @@ fn draw(f: &mut ratatui::Frame<'_>, app: &mut App<'_>) {
         .collect();
     let table = Table::new(
         rows,
-        [Constraint::Length(10), Constraint::Length(6), Constraint::Length(10), Constraint::Length(9), Constraint::Fill(1), Constraint::Length(24), Constraint::Length(1)],
+        [
+            Constraint::Length(10),
+            Constraint::Length(6),
+            Constraint::Length(10),
+            Constraint::Length(9),
+            Constraint::Fill(1),
+            Constraint::Length(24),
+            Constraint::Length(1),
+        ],
     )
     .header(Row::new(vec!["status", "id", "action", "size", "path", "why", ""]).style(Style::default().add_modifier(Modifier::BOLD)))
     .row_highlight_style(Style::default().bg(Color::DarkGray))
     .block(Block::default().borders(Borders::TOP));
     f.render_stateful_widget(table, body, &mut app.state);
 
-    if app.detail {
-        if let Some(&i) = app.state.selected().and_then(|s| app.view.get(s)) {
-            let e = &app.plan.entries[i];
-            let mut lines = vec![
-                Line::from(vec![Span::raw("reason  ").dim(), Span::raw(e.reason.clone())]),
-                Line::from(vec![
-                    Span::raw("bytes   ").dim(),
-                    Span::raw(format!("{} apparent · {} on disk · {} unshared", fmt::bytes(e.bytes.logical), fmt::bytes(e.bytes.alloc), fmt::bytes(e.bytes.private))),
-                ]),
-                Line::from(vec![
-                    Span::raw("state   ").dim(),
-                    Span::raw(format!(
-                        "{}{} · newest change {} ago · undo {}",
-                        e.fingerprint.files.map(|n| format!("{n} files")).unwrap_or_else(|| "file".into()),
-                        e.fingerprint.hash.as_ref().map(|_| " · hashed").unwrap_or(""),
-                        fmt::age(fmt::now_secs() - e.fingerprint.mtime),
-                        if e.undo == tidy_plan::Undo::Restore { "✓" } else { "✗ (permanent)" }
-                    )),
-                ]),
-            ];
-            if let Some(ev) = &e.evidence {
-                lines.push(Line::from(vec![Span::raw("judge   ").dim(), Span::raw(crate::judge_cmds::evidence_summary(ev))]));
-            }
-            for a in &e.alternatives {
-                lines.push(Line::from(vec![
-                    Span::raw("alt     ").dim(),
-                    Span::raw(format!("{} {} {}", a.rule, a.action.as_str(), a.p.map(|p| format!("{p:.2}")).unwrap_or_default())),
-                ]));
-            }
-            if let Some(err) = e.outcome.as_ref().and_then(|o| o.error.as_ref()) {
-                lines.push(Line::from(vec![Span::raw("error   ").dim(), Span::raw(err.clone()).red()]));
-            }
-            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(Block::default().borders(Borders::TOP).title(" details ")), detail);
+    if app.detail
+        && let Some(&i) = app.state.selected().and_then(|s| app.view.get(s))
+    {
+        let e = &app.plan.entries[i];
+        let mut lines = vec![
+            Line::from(vec![Span::raw("reason  ").dim(), Span::raw(e.reason.clone())]),
+            Line::from(vec![
+                Span::raw("bytes   ").dim(),
+                Span::raw(format!(
+                    "{} apparent · {} on disk · {} unshared",
+                    fmt::bytes(e.bytes.logical),
+                    fmt::bytes(e.bytes.alloc),
+                    fmt::bytes(e.bytes.private)
+                )),
+            ]),
+            Line::from(vec![
+                Span::raw("state   ").dim(),
+                Span::raw(format!(
+                    "{}{} · newest change {} ago · undo {}",
+                    e.fingerprint.files.map(|n| format!("{n} files")).unwrap_or_else(|| "file".into()),
+                    e.fingerprint.hash.as_ref().map(|_| " · hashed").unwrap_or(""),
+                    fmt::age(fmt::now_secs() - e.fingerprint.mtime),
+                    if e.undo == tidy_plan::Undo::Restore { "✓" } else { "✗ (permanent)" }
+                )),
+            ]),
+        ];
+        if let Some(ev) = &e.evidence {
+            lines.push(Line::from(vec![Span::raw("judge   ").dim(), Span::raw(crate::judge_cmds::evidence_summary(ev))]));
         }
+        for a in &e.alternatives {
+            lines.push(Line::from(vec![
+                Span::raw("alt     ").dim(),
+                Span::raw(format!("{} {} {}", a.rule, a.action.as_str(), a.p.map(|p| format!("{p:.2}")).unwrap_or_default())),
+            ]));
+        }
+        if let Some(err) = e.outcome.as_ref().and_then(|o| o.error.as_ref()) {
+            lines.push(Line::from(vec![Span::raw("error   ").dim(), Span::raw(err.clone()).red()]));
+        }
+        f.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: true }).block(Block::default().borders(Borders::TOP).title(" details ")),
+            detail,
+        );
     }
     let help = if !app.msg.is_empty() {
         Line::from(Span::raw(format!(" {}", app.msg)).yellow())
     } else {
-        Line::from(Span::raw(" a approve · r reject · p pending · space cycle · A/R all shown · / filter · ⏎ details · s save+quit · q quit").dim())
+        Line::from(
+            Span::raw(" a approve · r reject · p pending · space cycle · A/R all shown · / filter · ⏎ details · s save+quit · q quit")
+                .dim(),
+        )
     };
     f.render_widget(Paragraph::new(help), foot);
 }

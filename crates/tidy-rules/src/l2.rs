@@ -9,7 +9,7 @@
 use crate::calib::Calibration;
 use crate::guards::{Facts, Guards};
 use crate::items::{self, CompiledFilter, Item};
-use crate::policy::{subject_refs, Policy, Rule};
+use crate::policy::{Policy, Rule, subject_refs};
 use anyhow::Result;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -155,7 +155,11 @@ pub fn rule_probability(r: &CompiledRule, ans: &BTreeMap<String, Answer>) -> Opt
 fn criterion_text(policy: &Policy, c: &str) -> String {
     let mut out = c.to_string();
     for name in subject_refs(c) {
-        let desc = policy.subjects.get(&name).and_then(|s| s.description.clone()).unwrap_or_else(|| format!("the person called \"{name}\" (see the reference photos)"));
+        let desc = policy
+            .subjects
+            .get(&name)
+            .and_then(|s| s.description.clone())
+            .unwrap_or_else(|| format!("the person called \"{name}\" (see the reference photos)"));
         out = out.replace(&format!("{{{name}}}"), &desc);
     }
     out
@@ -180,7 +184,10 @@ impl Media {
                     .iter()
                     .filter_map(|r| crate::media::thumbnail(&tidy_scan::path::expand_tilde(r), 384))
                     .map(|mut i| {
-                        i.caption = Some(format!("Reference photo of \"{name}\"{}", s.description.as_ref().map(|d| format!(" ({d})")).unwrap_or_default()));
+                        i.caption = Some(format!(
+                            "Reference photo of \"{name}\"{}",
+                            s.description.as_ref().map(|d| format!(" ({d})")).unwrap_or_default()
+                        ));
                         i
                     })
                     .collect();
@@ -205,11 +212,15 @@ pub fn build_request_text(policy: &Policy, text: String, it: &Item, rules: &[&Co
     for r in rules {
         for (kind, list) in [("any", &r.rule.when.any), ("all", &r.rule.when.all), ("none", &r.rule.when.none)] {
             for (i, c) in list.iter().enumerate() {
-                qs.push(Question::predicate(format!("{}.{kind}{i}", r.qid), format!("Is this true of ITEM? {}", criterion_text(policy, c))));
+                qs.push(Question::predicate(
+                    format!("{}.{kind}{i}", r.qid),
+                    format!("Is this true of ITEM? {}", criterion_text(policy, c)),
+                ));
             }
         }
         if !r.dest_options.is_empty() {
-            let mut opts: Vec<(String, String)> = r.dest_options.iter().map(|(n, p)| (n.clone(), format!("the folder {}", tidy_scan::path::display_path(p)))).collect();
+            let mut opts: Vec<(String, String)> =
+                r.dest_options.iter().map(|(n, p)| (n.clone(), format!("the folder {}", tidy_scan::path::display_path(p)))).collect();
             opts.push(("none".into(), "None of these folders is a good fit for ITEM".into()));
             qs.push(Question::choice(format!("{}.dest", r.qid), "Which existing folder should ITEM be filed into?", opts));
         }
@@ -222,11 +233,13 @@ pub fn build_request_text(policy: &Policy, text: String, it: &Item, rules: &[&Co
         qs.push(Question::predicate("safety.regenerable", REGENERABLE_Q));
         qs.push(Question::score("safety.loss", LOSS_Q, loss_levels()));
     }
-    if content && !it.is_dir && matches!(it.kind(), "document" | "code" | "file") {
-        if let Some(ex) = items::text_excerpt(&it.path, 2048) {
-            text.push_str("\nCONTENT (first 2 KB)\n");
-            text.push_str(&ex);
-        }
+    if content
+        && !it.is_dir
+        && matches!(it.kind(), "document" | "code" | "file")
+        && let Some(ex) = items::text_excerpt(&it.path, 2048)
+    {
+        text.push_str("\nCONTENT (first 2 KB)\n");
+        text.push_str(&ex);
     }
     let mut images = Vec::new();
     if let Some(m) = media.filter(|m| m.max_images > 0) {
@@ -235,12 +248,14 @@ pub fn build_request_text(policy: &Policy, text: String, it: &Item, rules: &[&Co
             .flat_map(|r| r.rule.when.any.iter().chain(&r.rule.when.all).chain(&r.rule.when.none))
             .flat_map(|c| subject_refs(c))
             .collect();
-        if !it.is_dir && it.kind() == "image" && (content || !subjects.is_empty()) {
-            if let Some(mut img) = crate::media::thumbnail(&it.path, 512) {
-                img.caption = Some("ITEM itself (the image being classified)".into());
-                images.push(img);
-                text.push_str("The first image shows ITEM itself.\n");
-            }
+        if !it.is_dir
+            && it.kind() == "image"
+            && (content || !subjects.is_empty())
+            && let Some(mut img) = crate::media::thumbnail(&it.path, 512)
+        {
+            img.caption = Some("ITEM itself (the image being classified)".into());
+            images.push(img);
+            text.push_str("The first image shows ITEM itself.\n");
         }
         if !images.is_empty() {
             let mut seen = HashSet::new();
@@ -363,10 +378,10 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
                 Ok(d) => dest = Some(d),
                 Err(e) => skip = Some(e),
             }
-        } else if action == Action::Rename {
-            if let (Some(tpl), Some(parent)) = (&r.rule.name, it.path.parent()) {
-                dest = Some(parent.join(expand_template(tpl, it, None)));
-            }
+        } else if action == Action::Rename
+            && let (Some(tpl), Some(parent)) = (&r.rule.name, it.path.parent())
+        {
+            dest = Some(parent.join(expand_template(tpl, it, None)));
         }
         if let Some(why) = skip {
             if uncertain || why == "none" {
@@ -505,7 +520,8 @@ pub fn expand_template(tpl: &str, it: &Item, choice: Option<&Path>) -> String {
 }
 
 pub fn strftime(t: i64, f: &str) -> String {
-    const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const MONTHS: [&str; 12] =
+        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     let ymd = items::ymd(t);
     let (y, m, d) = (&ymd[0..4], &ymd[5..7], &ymd[8..10]);
     let mi: usize = m.parse().unwrap_or(1);
@@ -600,7 +616,16 @@ pub fn items_for_paths(rules: &[CompiledRule], paths: &[PathBuf], now: i64) -> V
         if !(md.is_file() || md.is_dir()) {
             continue;
         }
-        let mut it = Item { path: p.clone(), is_dir: md.is_dir(), logical: md.len(), alloc: md.blocks() * 512, mtime: md.mtime(), flags: 0, depth: 1, dir: None };
+        let mut it = Item {
+            path: p.clone(),
+            is_dir: md.is_dir(),
+            logical: md.len(),
+            alloc: md.blocks() * 512,
+            mtime: md.mtime(),
+            flags: 0,
+            depth: 1,
+            dir: None,
+        };
         if it.is_dir {
             items::summarize_dir(&mut it);
         }

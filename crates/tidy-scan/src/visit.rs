@@ -8,18 +8,13 @@ use crate::platform::Reader;
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 
+#[derive(Default)]
 pub struct VisitOptions {
     pub threads: usize,
     pub cross_mounts: bool,
     pub private: bool,
     /// Skip directories whose name starts with '.'.
     pub skip_hidden_dirs: bool,
-}
-
-impl Default for VisitOptions {
-    fn default() -> Self {
-        VisitOptions { threads: 0, cross_mounts: false, private: false, skip_hidden_dirs: false }
-    }
 }
 
 /// Call `f(dir, entry)` for every non-directory entry under `root`, from

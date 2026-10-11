@@ -2,7 +2,7 @@
 //! rebase-style editor text format.
 
 use crate::model::{Action, Entry, Plan, Status, Undo};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tidy_scan::{fmt, path::display_path};
@@ -21,30 +21,36 @@ pub struct Filter {
 
 impl Filter {
     pub fn is_empty(&self) -> bool {
-        self.rule.is_none() && self.action.is_none() && self.min_p.is_none() && self.min_size.is_none() && self.under.is_none() && self.ids.is_empty() && self.status.is_none()
+        self.rule.is_none()
+            && self.action.is_none()
+            && self.min_p.is_none()
+            && self.min_size.is_none()
+            && self.under.is_none()
+            && self.ids.is_empty()
+            && self.status.is_none()
     }
 
     pub fn matches(&self, e: &Entry) -> bool {
-        if let Some(r) = &self.rule {
-            if !(e.source.rule == *r || e.source.rule.starts_with(r.as_str())) {
-                return false;
-            }
+        if let Some(r) = &self.rule
+            && !(e.source.rule == *r || e.source.rule.starts_with(r.as_str()))
+        {
+            return false;
         }
         if self.action.is_some_and(|a| a != e.action) {
             return false;
         }
-        if let Some(p) = self.min_p {
-            if e.source.p.is_some_and(|x| x < p) {
-                return false;
-            }
+        if let Some(p) = self.min_p
+            && e.source.p.is_some_and(|x| x < p)
+        {
+            return false;
         }
         if self.min_size.is_some_and(|m| e.bytes.private < m && e.bytes.logical < m) {
             return false;
         }
-        if let Some(u) = &self.under {
-            if !e.path.starts_with(u) {
-                return false;
-            }
+        if let Some(u) = &self.under
+            && !e.path.starts_with(u)
+        {
+            return false;
         }
         if !self.ids.is_empty() && !self.ids.iter().any(|i| e.id.starts_with(i.as_str())) {
             return false;
@@ -98,8 +104,20 @@ pub fn line(e: &Entry) -> String {
         .first()
         .map(|a| format!(" · alt {}{}", a.rule, a.p.map(|p| format!(" {p:.2}")).unwrap_or_default()))
         .unwrap_or_default();
-    let unsure = if e.evidence.as_ref().and_then(|v| v.get("uncertain")).and_then(|u| u.as_bool()) == Some(true) { "  ⚠ uncertain" } else { "" };
-    format!("{:<10} {:<5} {:<10} {}  {:>8}  {}{}  {}{}", e.status.as_str(), e.id, e.action.as_str(), what, size, e.provenance(), alt, undo, unsure)
+    let unsure =
+        if e.evidence.as_ref().and_then(|v| v.get("uncertain")).and_then(|u| u.as_bool()) == Some(true) { "  ⚠ uncertain" } else { "" };
+    format!(
+        "{:<10} {:<5} {:<10} {}  {:>8}  {}{}  {}{}",
+        e.status.as_str(),
+        e.id,
+        e.action.as_str(),
+        what,
+        size,
+        e.provenance(),
+        alt,
+        undo,
+        unsure
+    )
 }
 
 pub fn render_editor(plan: &Plan) -> String {

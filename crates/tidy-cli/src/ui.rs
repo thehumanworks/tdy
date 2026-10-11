@@ -1,8 +1,8 @@
 //! Terminal rendering helpers.
 
 use std::io::IsTerminal;
-use tidy_scan::fmt;
 use tidy_scan::TreeRow;
+use tidy_scan::fmt;
 
 pub fn color() -> bool {
     std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
@@ -20,7 +20,7 @@ pub fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

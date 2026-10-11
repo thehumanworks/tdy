@@ -38,12 +38,8 @@ impl Reader {
             };
             #[cfg(not(unix))]
             let (nb, alloc, ino, dev, nlink, mtime) = {
-                let mtime = md
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+                let mtime =
+                    md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
                 (name.to_string_lossy().as_bytes().to_vec(), md.len(), 0u64, 0u64, 1u32, mtime)
             };
             f(&EntryInfo { name: &nb, kind, logical: md.len(), alloc, private: None, ino, dev, nlink, mtime, flags: 0 });

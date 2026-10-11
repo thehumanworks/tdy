@@ -1,8 +1,8 @@
 //! Build a plan: scan → detectors (L1) → guards (L0) → entries.
 //! Policy rules (L2) are added by the judge layer on top of this.
 
-use crate::detect::{detect, Finding};
-use crate::guards::{git_roots_in_index, Block, Facts, Guards};
+use crate::detect::{Finding, detect};
+use crate::guards::{Block, Facts, Guards, git_roots_in_index};
 use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -31,11 +31,28 @@ pub struct PlanRequest {
 
 /// Header for a new plan.
 pub fn new_header(roots: Vec<PathBuf>, mode: Mode, policy: Option<PathBuf>, policy_hash: Option<String>, judge: Option<String>) -> Header {
-    Header { tidy_plan: PLAN_VERSION, id: store::new_id(), created: tidy_scan::fmt::now_secs(), roots, mode, policy, policy_hash, judge, note: None }
+    Header {
+        tidy_plan: PLAN_VERSION,
+        id: store::new_id(),
+        created: tidy_scan::fmt::now_secs(),
+        roots,
+        mode,
+        policy,
+        policy_hash,
+        judge,
+        note: None,
+    }
 }
 
 /// Turn L1 findings into guarded plan entries.
-pub fn entries_from_findings(idx: &Index, findings: &[Finding], guards: &Guards, mode: Mode, taken: &mut HashSet<String>, blocked: &mut Vec<Blocked>) -> Vec<Entry> {
+pub fn entries_from_findings(
+    idx: &Index,
+    findings: &[Finding],
+    guards: &Guards,
+    mode: Mode,
+    taken: &mut HashSet<String>,
+    blocked: &mut Vec<Blocked>,
+) -> Vec<Entry> {
     let mut out = Vec::new();
     for f in findings {
         let node = &idx.nodes[f.node as usize];

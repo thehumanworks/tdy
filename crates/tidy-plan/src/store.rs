@@ -1,7 +1,7 @@
 //! Plan files on disk: `<data>/plans/<id>.jsonl`, written atomically.
 
-use crate::model::{Entry, Header, Plan, PLAN_VERSION};
-use anyhow::{bail, Context, Result};
+use crate::model::{Entry, Header, PLAN_VERSION, Plan};
+use anyhow::{Context, Result, bail};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use tidy_ops::dirs::plans_dir;
@@ -82,10 +82,10 @@ pub fn list() -> Result<Vec<Plan>> {
     let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(v) };
     for e in rd.flatten() {
         let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-            if let Ok(plan) = load_path(&p) {
-                v.push(plan);
-            }
+        if p.extension().and_then(|s| s.to_str()) == Some("jsonl")
+            && let Ok(plan) = load_path(&p)
+        {
+            v.push(plan);
         }
     }
     v.sort_by_key(|p| std::cmp::Reverse(p.header.created));

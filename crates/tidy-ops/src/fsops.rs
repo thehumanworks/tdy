@@ -191,10 +191,8 @@ pub fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
 
 pub fn set_mtime(p: &Path, secs: i64, nsec: i64) -> io::Result<()> {
     let c = path_to_cstring(p);
-    let times = [
-        libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT },
-        libc::timespec { tv_sec: secs as libc::time_t, tv_nsec: nsec as _ },
-    ];
+    let times =
+        [libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT }, libc::timespec { tv_sec: secs as libc::time_t, tv_nsec: nsec as _ }];
     if unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW) } != 0 {
         return Err(io::Error::last_os_error());
     }

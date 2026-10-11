@@ -9,11 +9,11 @@
 use crate::journal::{self, Journal, Phase};
 use crate::model::{Action, Entry, OnConflict, Outcome, Plan, Status, Undo};
 use crate::store;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tidy_ops::fsops::{copy_tree, remove_tree, rename_noreplace, same_content, unique_in};
-use tidy_ops::{trash, verify, Drift};
+use tidy_ops::{Drift, trash, verify};
 
 #[derive(Default, Clone)]
 pub struct ApplyOptions {
@@ -63,27 +63,27 @@ pub fn apply(plan: &mut Plan, opts: &ApplyOptions, preflight: Preflight<'_>, on:
         if e.status != Status::Approved {
             continue;
         }
-        if let Some(only) = &opts.only {
-            if !only.contains(&e.id) {
-                continue;
-            }
+        if let Some(only) = &opts.only
+            && !only.contains(&e.id)
+        {
+            continue;
         }
         // 1. fingerprint
-        if opts.verify {
-            if let Err(d) = verify(&e.path, &e.fingerprint) {
-                let msg = d.to_string();
-                if !opts.dry_run {
-                    let e = &mut plan.entries[i];
-                    e.status = Status::Skipped;
-                    e.outcome = Some(Outcome { at: now(), error: Some(msg.clone()), ..Default::default() });
-                }
-                report.skipped += 1;
-                on(Event::Skip(&plan.entries[i], msg));
-                if matches!(d, Drift::Gone) {
-                    continue;
-                }
+        if opts.verify
+            && let Err(d) = verify(&e.path, &e.fingerprint)
+        {
+            let msg = d.to_string();
+            if !opts.dry_run {
+                let e = &mut plan.entries[i];
+                e.status = Status::Skipped;
+                e.outcome = Some(Outcome { at: now(), error: Some(msg.clone()), ..Default::default() });
+            }
+            report.skipped += 1;
+            on(Event::Skip(&plan.entries[i], msg));
+            if matches!(d, Drift::Gone) {
                 continue;
             }
+            continue;
         }
         // 2. guards
         if let Err(why) = preflight(e) {
@@ -214,7 +214,9 @@ fn resolve_target(e: &Entry, plan_id: &str, reserve: bool) -> std::result::Resul
             Ok(Target::DuplicateOf(dest, q))
         }
         Action::Trash => trash::trash_slot(&e.path, reserve).map(Target::Trash).map_err(|x| TargetErr::Fail(x.to_string())),
-        Action::Quarantine => trash::quarantine_slot(&e.path, plan_id, &e.id, reserve).map(Target::Path).map_err(|x| TargetErr::Fail(x.to_string())),
+        Action::Quarantine => {
+            trash::quarantine_slot(&e.path, plan_id, &e.id, reserve).map(Target::Path).map_err(|x| TargetErr::Fail(x.to_string()))
+        }
         Action::Move | Action::Rename | Action::Copy => {
             let dest = e.dest.clone().ok_or_else(|| TargetErr::Fail("no destination".into()))?;
             let parent = dest.parent().ok_or_else(|| TargetErr::Fail("destination has no parent".into()))?;
@@ -370,7 +372,9 @@ fn partial_path(dst: &Path) -> PathBuf {
 fn describe(e: &Entry, t: &Target) -> String {
     match t {
         Target::None => format!("{} {}", e.action.as_str(), e.path.display()),
-        Target::DuplicateOf(d, _) if e.action == Action::Archive => format!("archive {} → {} (original to quarantine)", e.path.display(), d.display()),
+        Target::DuplicateOf(d, _) if e.action == Action::Archive => {
+            format!("archive {} → {} (original to quarantine)", e.path.display(), d.display())
+        }
         Target::DuplicateOf(d, _) => format!("{} is identical to {} → quarantine", e.path.display(), d.display()),
         Target::Path(k) if e.action == Action::Dedupe => format!("dedupe {} ⇐ clone of {}", e.path.display(), k.display()),
         _ if e.action == Action::Tag => format!("tag {} +{}", e.path.display(), e.tags.join(",")),
@@ -419,12 +423,19 @@ pub fn undo(plan: &mut Plan, only: Option<&HashSet<String>>, on: &mut dyn FnMut(
                         std::fs::create_dir_all(parent)?;
                     }
                     rename_noreplace(&now_at, &e.path)?;
-                    if let Some(a) = e.outcome.as_ref().and_then(|o| o.previous.as_ref()).and_then(|v| v.get("archive")).and_then(|a| a.as_str()) {
+                    if let Some(a) =
+                        e.outcome.as_ref().and_then(|o| o.previous.as_ref()).and_then(|v| v.get("archive")).and_then(|a| a.as_str())
+                    {
                         let _ = std::fs::remove_file(a);
                     }
                 }
                 Action::Tag => {
-                    let prev: Vec<String> = e.outcome.as_ref().and_then(|o| o.previous.clone()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+                    let prev: Vec<String> = e
+                        .outcome
+                        .as_ref()
+                        .and_then(|o| o.previous.clone())
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .unwrap_or_default();
                     tidy_ops::meta::set_tags(&e.path, &prev)?;
                 }
                 _ => {
@@ -504,7 +515,11 @@ pub fn recover(plan: &mut Plan) -> Result<Vec<String>> {
                     (Action::Delete, _) => {
                         if exists(&e.path) {
                             e.status = Status::Failed;
-                            e.outcome = Some(Outcome { at: now(), error: Some("interrupted while deleting; partially removed".into()), ..Default::default() });
+                            e.outcome = Some(Outcome {
+                                at: now(),
+                                error: Some("interrupted while deleting; partially removed".into()),
+                                ..Default::default()
+                            });
                             "interrupted delete left a partial tree".to_string()
                         } else {
                             e.status = Status::Applied;
@@ -529,7 +544,11 @@ pub fn recover(plan: &mut Plan) -> Result<Vec<String>> {
                             }
                             _ => {
                                 e.status = Status::Failed;
-                                e.outcome = Some(Outcome { at: now(), error: Some("interrupted; both source and destination exist".into()), ..Default::default() });
+                                e.outcome = Some(Outcome {
+                                    at: now(),
+                                    error: Some("interrupted; both source and destination exist".into()),
+                                    ..Default::default()
+                                });
                                 "interrupted with both copies present".to_string()
                             }
                         }

@@ -3,14 +3,14 @@
 //! autonomous mode, entries the policy approves are applied immediately.
 
 use crate::ui;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tidy_plan::model::*;
-use tidy_plan::{store, ApplyOptions};
+use tidy_plan::{ApplyOptions, store};
 use tidy_rules::calib::Calibration;
 use tidy_rules::guards::Guards;
 use tidy_rules::l2;
@@ -37,7 +37,9 @@ fn ignored(p: &Path) -> bool {
     let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     name.starts_with('.')
         || name.starts_with("~$")
-        || [".part", ".crdownload", ".download", ".tmp", ".partial", ".opdownload", ".tidy-partial", ".swp"].iter().any(|s| name.ends_with(s))
+        || [".part", ".crdownload", ".download", ".tmp", ".partial", ".opdownload", ".tidy-partial", ".swp"]
+            .iter()
+            .any(|s| name.ends_with(s))
         || p.components().any(|c| c.as_os_str() == ".tidy-state" || c.as_os_str() == "node_modules")
 }
 
@@ -101,10 +103,10 @@ pub fn cmd_watch(c: WatchCmd) -> Result<()> {
     let started = Instant::now();
     let conc = policy.judge.concurrency.unwrap_or(32);
     loop {
-        if let Some(d) = c.duration {
-            if started.elapsed().as_secs_f64() >= d {
-                break;
-            }
+        if let Some(d) = c.duration
+            && started.elapsed().as_secs_f64() >= d
+        {
+            break;
         }
         // drain events
         while let Ok(ev) = rx.recv_timeout(Duration::from_millis(250)) {

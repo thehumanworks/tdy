@@ -59,40 +59,150 @@ impl std::fmt::Display for Block {
 }
 
 const SYSTEM_PREFIXES: &[&str] = &[
-    "/System", "/usr", "/bin", "/sbin", "/etc", "/private/etc", "/private/var/db", "/Library", "/Applications", "/opt", "/dev",
-    "/proc", "/sys", "/boot", "/lib", "/lib64", "/nix/store", "/snap", "/cores", "/Volumes/Recovery", "/var", "/run", "/srv",
+    "/System",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/private/etc",
+    "/private/var/db",
+    "/Library",
+    "/Applications",
+    "/opt",
+    "/dev",
+    "/proc",
+    "/sys",
+    "/boot",
+    "/lib",
+    "/lib64",
+    "/nix/store",
+    "/snap",
+    "/cores",
+    "/Volumes/Recovery",
+    "/var",
+    "/run",
+    "/srv",
 ];
 
 /// Home-relative paths holding credentials or identity; never touched.
 const SECRET_PATHS: &[&str] = &[
-    ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".config/gh", ".config/gcloud", ".password-store", ".secrets", ".netrc",
-    ".pki", "Library/Keychains", ".config/op", ".config/fnox", ".age", ".config/sops", ".vault-token", ".npmrc", ".pypirc",
-    ".cargo/credentials.toml", ".cargo/credentials", ".git-credentials", ".config/age",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".config/gh",
+    ".config/gcloud",
+    ".password-store",
+    ".secrets",
+    ".netrc",
+    ".pki",
+    "Library/Keychains",
+    ".config/op",
+    ".config/fnox",
+    ".age",
+    ".config/sops",
+    ".vault-token",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials.toml",
+    ".cargo/credentials",
+    ".git-credentials",
+    ".config/age",
 ];
 
 /// Home-relative app data: destructive actions only for regenerable caches.
 const APP_DATA: &[&str] = &[
-    "Library/Mail", "Library/Messages", "Library/Containers", "Library/Group Containers", "Library/Application Support",
-    "Library/Safari", "Library/Calendars", "Library/Contacts", "Library/Notes", "Library/Photos", "Library/Preferences",
-    "Library/Accounts", "Library/Cookies", "Library/HomeKit", ".local/share", ".config", ".mozilla", ".thunderbird",
+    "Library/Mail",
+    "Library/Messages",
+    "Library/Containers",
+    "Library/Group Containers",
+    "Library/Application Support",
+    "Library/Safari",
+    "Library/Calendars",
+    "Library/Contacts",
+    "Library/Notes",
+    "Library/Photos",
+    "Library/Preferences",
+    "Library/Accounts",
+    "Library/Cookies",
+    "Library/HomeKit",
+    ".local/share",
+    ".config",
+    ".mozilla",
+    ".thunderbird",
 ];
 
 /// Standard top-level folders that are never themselves removed or moved.
 const STANDARD_DIRS: &[&str] = &[
-    "Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", "Library", "Applications", "Public", "Videos", "Templates",
-    "projects", "dev", "src", "code", "go", ".cache", ".local", ".config", ".cargo", ".rustup",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Movies",
+    "Music",
+    "Library",
+    "Applications",
+    "Public",
+    "Videos",
+    "Templates",
+    "projects",
+    "dev",
+    "src",
+    "code",
+    "go",
+    ".cache",
+    ".local",
+    ".config",
+    ".cargo",
+    ".rustup",
 ];
 
 /// Directories that macOS and apps treat as single documents/bundles.
 const PACKAGE_EXTS: &[&str] = &[
-    "app", "bundle", "framework", "plugin", "kext", "xpc", "appex", "photoslibrary", "musiclibrary", "tvlibrary", "imovielibrary",
-    "fcpbundle", "logicx", "band", "pages", "numbers", "key", "rtfd", "xcodeproj", "xcworkspace", "playground", "sparsebundle",
-    "photolibrary", "aplibrary", "lrdata", "lrlibrary", "dtBase2", "scriv", "nib", "storyboardc", "pkg", "mpkg", "qlgenerator",
-    "prefPane", "saver", "wdgt", "dSYM",
+    "app",
+    "bundle",
+    "framework",
+    "plugin",
+    "kext",
+    "xpc",
+    "appex",
+    "photoslibrary",
+    "musiclibrary",
+    "tvlibrary",
+    "imovielibrary",
+    "fcpbundle",
+    "logicx",
+    "band",
+    "pages",
+    "numbers",
+    "key",
+    "rtfd",
+    "xcodeproj",
+    "xcworkspace",
+    "playground",
+    "sparsebundle",
+    "photolibrary",
+    "aplibrary",
+    "lrdata",
+    "lrlibrary",
+    "dtBase2",
+    "scriv",
+    "nib",
+    "storyboardc",
+    "pkg",
+    "mpkg",
+    "qlgenerator",
+    "prefPane",
+    "saver",
+    "wdgt",
+    "dSYM",
 ];
 
 /// Whole-library packages: destructive actions on them are always blocked.
-const LIBRARY_EXTS: &[&str] = &["photoslibrary", "musiclibrary", "tvlibrary", "imovielibrary", "photolibrary", "aplibrary", "lrlibrary", "fcpbundle", "logicx"];
+const LIBRARY_EXTS: &[&str] =
+    &["photoslibrary", "musiclibrary", "tvlibrary", "imovielibrary", "photolibrary", "aplibrary", "lrlibrary", "fcpbundle", "logicx"];
 
 pub struct Guards {
     pub cfg: GuardConfig,
@@ -177,19 +287,18 @@ impl Guards {
         // packages: never act on something inside a bundle; never destroy libraries
         let mut cur = path.parent();
         while let Some(c) = cur {
-            if let Some(e) = ext_of(c) {
-                if PACKAGE_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)) {
-                    return block("package", format!("inside package {}", c.display()));
-                }
+            if let Some(e) = ext_of(c)
+                && PACKAGE_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e))
+            {
+                return block("package", format!("inside package {}", c.display()));
             }
             cur = c.parent();
         }
-        if destructive {
-            if let Some(e) = ext_of(path) {
-                if LIBRARY_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)) {
-                    return block("package", "media library".into());
-                }
-            }
+        if destructive
+            && let Some(e) = ext_of(path)
+            && LIBRARY_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e))
+        {
+            return block("package", "media library".into());
         }
         // cloud
         if !self.cfg.allow_cloud && destructive {
@@ -223,10 +332,12 @@ impl Guards {
             return block("open", format!("in use: {}", o.display()));
         }
         // git: inside a work tree → must be ignored; containing repos → no local-only work
-        if let Some(root) = probe::git_root(path.parent().unwrap_or(path)) {
-            if root != path && !path.starts_with(root.join(".git")) && !probe::git_ignored(&root, path) {
-                return block("git", format!("tracked or untracked-but-not-ignored in repo {}", root.display()));
-            }
+        if let Some(root) = probe::git_root(path.parent().unwrap_or(path))
+            && root != path
+            && !path.starts_with(root.join(".git"))
+            && !probe::git_ignored(&root, path)
+        {
+            return block("git", format!("tracked or untracked-but-not-ignored in repo {}", root.display()));
         }
         let found;
         let roots: &[PathBuf] = match git_roots_inside {
@@ -282,7 +393,10 @@ mod tests {
         let home = home_dir();
         assert_eq!(g.check(&home.join(".ssh/id_ed25519"), Action::Move, &old(), Some(&[])).unwrap_err().guard, "secrets");
         assert_eq!(g.check(&home.join("Downloads"), Action::Trash, &old(), Some(&[])).unwrap_err().guard, "root");
-        assert_eq!(g.check(&home.join("Pictures/Photos Library.photoslibrary/x.jpg"), Action::Tag, &old(), Some(&[])).unwrap_err().guard, "package");
+        assert_eq!(
+            g.check(&home.join("Pictures/Photos Library.photoslibrary/x.jpg"), Action::Tag, &old(), Some(&[])).unwrap_err().guard,
+            "package"
+        );
         assert_eq!(g.check(&home.join("Pictures/P.photoslibrary"), Action::Trash, &old(), Some(&[])).unwrap_err().guard, "package");
         // app data: blocked unless regenerable
         let p = home.join("Library/Application Support/Foo/Cache");

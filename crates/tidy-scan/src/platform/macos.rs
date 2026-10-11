@@ -9,7 +9,7 @@
 //! and finally the extended common (forkattr) group. Each attribute is
 //! 4-byte aligned, so 8-byte values are read unaligned.
 
-use crate::entry::{flags, EntryInfo, Kind, ReadOptions};
+use crate::entry::{EntryInfo, Kind, ReadOptions, flags};
 use std::ffi::CStr;
 use std::io;
 
@@ -77,8 +77,14 @@ impl Reader {
         let mut al = AttrList {
             bitmapcount: ATTR_BIT_MAP_COUNT,
             reserved: 0,
-            commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_ERROR | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE
-                | ATTR_CMN_MODTIME | ATTR_CMN_FLAGS | ATTR_CMN_FILEID,
+            commonattr: ATTR_CMN_RETURNED_ATTRS
+                | ATTR_CMN_NAME
+                | ATTR_CMN_ERROR
+                | ATTR_CMN_DEVID
+                | ATTR_CMN_OBJTYPE
+                | ATTR_CMN_MODTIME
+                | ATTR_CMN_FLAGS
+                | ATTR_CMN_FILEID,
             volattr: 0,
             dirattr: 0,
             fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE,

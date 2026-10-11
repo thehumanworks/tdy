@@ -150,7 +150,8 @@ impl Http {
             let (status, text, retry_after) = match sent {
                 Ok(mut resp) => {
                     let status = resp.status().as_u16();
-                    let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<f64>().ok());
+                    let retry_after =
+                        resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<f64>().ok());
                     let text = resp.body_mut().with_config().limit(64 << 20).read_to_string().unwrap_or_default();
                     (status, text, retry_after)
                 }

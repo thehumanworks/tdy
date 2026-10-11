@@ -1,17 +1,17 @@
 //! `tidy plan | plans | show | review | apply | undo | explain | purge | detectors | init`.
 
 use crate::ui;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use tidy_plan::review::{self, Filter};
-use tidy_plan::{store, Action, ApplyOptions, Event, Status};
+use tidy_plan::{Action, ApplyOptions, Event, Status, store};
+use tidy_rules::Policy;
 use tidy_rules::guards::{Facts, Guards};
 use tidy_rules::planner::{self, PlanRequest};
-use tidy_rules::Policy;
-use tidy_scan::{fmt, path::display_path, path::expand_tilde, ScanOptions};
+use tidy_scan::{ScanOptions, fmt, path::display_path, path::expand_tilde};
 
 #[derive(Args)]
 pub struct PlanCmd {
@@ -185,7 +185,8 @@ pub fn cmd_plan(c: PlanCmd) -> Result<()> {
     if c.autonomous {
         policy.mode = tidy_plan::Mode::Autonomous;
     }
-    let roots: Vec<PathBuf> = c.paths.iter().map(|p| std::fs::canonicalize(expand_tilde(p)).with_context(|| format!("{p}"))).collect::<Result<_>>()?;
+    let roots: Vec<PathBuf> =
+        c.paths.iter().map(|p| std::fs::canonicalize(expand_tilde(p)).with_context(|| p.to_string())).collect::<Result<_>>()?;
     let guards = Guards::new(policy.guard_config());
     let header = planner::new_header(roots.clone(), policy.mode, ppath, hash, None);
     let req = PlanRequest { roots, scan: ScanOptions { threads: c.threads, top_k: 0, ..Default::default() }, detectors: !c.no_detectors };
@@ -307,7 +308,12 @@ pub fn cmd_review(c: ReviewCmd) -> Result<()> {
         let n = review::set_status(&mut plan, &f, status, "human");
         store::save(&plan)?;
         let cnt = plan.counts();
-        println!("{} {n} entries → {}  {}", ui::bold(&plan.header.id), status.as_str(), ui::dim(&format!("approved {} · rejected {} · pending {}", cnt.approved, cnt.rejected, cnt.pending)));
+        println!(
+            "{} {n} entries → {}  {}",
+            ui::bold(&plan.header.id),
+            status.as_str(),
+            ui::dim(&format!("approved {} · rejected {} · pending {}", cnt.approved, cnt.rejected, cnt.pending))
+        );
         return Ok(());
     }
     if c.edit {
@@ -343,12 +349,8 @@ fn edit_in_editor(plan: &mut tidy_plan::Plan) -> Result<()> {
 pub fn apply_guard(policy: &Policy) -> impl Fn(&tidy_plan::Entry) -> Result<(), String> + '_ {
     let guards = Guards::new(policy.guard_config());
     move |e: &tidy_plan::Entry| {
-        let facts = Facts {
-            mtime_max: Some(e.fingerprint.mtime),
-            flags: 0,
-            regenerable: e.source.layer == tidy_plan::Layer::L1,
-            min_age: None,
-        };
+        let facts =
+            Facts { mtime_max: Some(e.fingerprint.mtime), flags: 0, regenerable: e.source.layer == tidy_plan::Layer::L1, min_age: None };
         // Respect the age the plan was made under: the fingerprint check already
         // guarantees nothing changed since, so only re-check structural guards.
         let facts = Facts { mtime_max: facts.mtime_max.map(|_| 0), ..facts };
@@ -418,10 +420,14 @@ fn print_event(ev: &Event<'_>, json: bool) {
         return;
     }
     match ev {
-        Event::Ok(e, m) => println!("  {} {:<5} {}", ui::green("✓"), e.id, m.replace(&tidy_scan::path::home_dir().display().to_string(), "~")),
+        Event::Ok(e, m) => {
+            println!("  {} {:<5} {}", ui::green("✓"), e.id, m.replace(&tidy_scan::path::home_dir().display().to_string(), "~"))
+        }
         Event::Skip(e, m) => println!("  {} {:<5} {}  {}", ui::yellow("-"), e.id, display_path(&e.path), ui::dim(m)),
         Event::Fail(e, m) => println!("  {} {:<5} {}  {}", ui::red("✗"), e.id, display_path(&e.path), m),
-        Event::WouldDo(e, m) => println!("  {} {:<5} {}", ui::dim("·"), e.id, m.replace(&tidy_scan::path::home_dir().display().to_string(), "~")),
+        Event::WouldDo(e, m) => {
+            println!("  {} {:<5} {}", ui::dim("·"), e.id, m.replace(&tidy_scan::path::home_dir().display().to_string(), "~"))
+        }
         Event::Note(m) => println!("  {}", ui::dim(m)),
     }
 }
@@ -464,7 +470,16 @@ pub fn cmd_explain(c: ExplainCmd) -> Result<()> {
         println!("{v}");
         return Ok(());
     }
-    println!("{}  {}", ui::bold(&display_path(&p)), ui::dim(&format!("{} · {} files · newest change {} ago", fmt::bytes(logical), ui::thousands(files), fmt::age(fmt::now_secs() - mtime))));
+    println!(
+        "{}  {}",
+        ui::bold(&display_path(&p)),
+        ui::dim(&format!(
+            "{} · {} files · newest change {} ago",
+            fmt::bytes(logical),
+            ui::thousands(files),
+            fmt::age(fmt::now_secs() - mtime)
+        ))
+    );
     match det {
         Some((id, what, hint, _)) => println!("  L1 detector  {} — {} ({})", ui::bold(id), what, hint),
         None => println!("  L1 detector  {}", ui::dim("none")),
@@ -488,7 +503,12 @@ pub fn cmd_purge(c: PurgeCmd) -> Result<()> {
         if mtime < cutoff {
             let (_, logical, _) = tidy_ops::fingerprint::tree_summary(&p).unwrap_or((0, 0, 0));
             total += logical;
-            println!("  {:>9}  {}  {}", fmt::bytes(logical), display_path(&p), ui::dim(&format!("{} old", fmt::age(fmt::now_secs() - mtime))));
+            println!(
+                "  {:>9}  {}  {}",
+                fmt::bytes(logical),
+                display_path(&p),
+                ui::dim(&format!("{} old", fmt::age(fmt::now_secs() - mtime)))
+            );
             doomed.push(p);
         }
     }

@@ -2,19 +2,19 @@
 //! policy check/test, bench.
 
 use crate::ui;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use std::collections::HashSet;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tidy_judge::{Answer, BackendConfig, Cached, Cascade, Judge, Question, Request};
+use tidy_rules::Policy;
 use tidy_rules::calib::{self, Calibration, Label};
 use tidy_rules::guards::Guards;
 use tidy_rules::items::{self, Item};
 use tidy_rules::l2::{self, CompiledRule, OutcomeKind};
 use tidy_rules::planner::Planned;
-use tidy_rules::Policy;
 use tidy_scan::{fmt, path::display_path, path::expand_tilde};
 
 /// USD per 1M input tokens, where the vendor publishes it.
@@ -100,10 +100,10 @@ fn progress_bar(label: &'static str) -> impl Fn(usize, usize) + Sync {
 pub fn add_policy_entries(planned: &mut Planned, policy: &Policy, guards: &Guards) -> Result<()> {
     let built = build_judge(policy, false)?;
     for r in &policy.rules {
-        if let Some(j) = &r.judge {
-            if Some(j) != policy.judge.default.as_ref() {
-                eprintln!("{}", ui::yellow(&format!("rule `{}`: per-rule judges are not supported yet; using the default judge", r.id)));
-            }
+        if let Some(j) = &r.judge
+            && Some(j) != policy.judge.default.as_ref()
+        {
+            eprintln!("{}", ui::yellow(&format!("rule `{}`: per-rule judges are not supported yet; using the default judge", r.id)));
         }
     }
     let calib = Calibration::load();
@@ -126,9 +126,15 @@ pub fn add_policy_entries(planned: &mut Planned, policy: &Policy, guards: &Guard
             });
         }
     }
-    let errors: Vec<&str> = run.outcomes.iter().filter_map(|o| if let OutcomeKind::Error(e) = &o.kind { Some(e.as_str()) } else { None }).collect();
+    let errors: Vec<&str> =
+        run.outcomes.iter().filter_map(|o| if let OutcomeKind::Error(e) = &o.kind { Some(e.as_str()) } else { None }).collect();
     if let Some(b) = &built {
-        let cost = b.models.first().and_then(|m| price_per_mtok(m)).map(|p| format!(" · ≈${:.4}", run.input_tokens as f64 / 1e6 * p)).unwrap_or_default();
+        let cost = b
+            .models
+            .first()
+            .and_then(|m| price_per_mtok(m))
+            .map(|p| format!(" · ≈${:.4}", run.input_tokens as f64 / 1e6 * p))
+            .unwrap_or_default();
         eprintln!(
             "{}",
             ui::dim(&format!(
@@ -209,7 +215,16 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
         OutcomeKind::Kept { rule, p } => format!("kept by {rule} ({p:.2})"),
         OutcomeKind::Propose { entries } => entries
             .iter()
-            .map(|e| format!("{} via {} ({:.2}){}{}", e.action.as_str(), e.rule, e.p, e.dest.as_ref().map(|d| format!(" → {}", display_path(d))).unwrap_or_default(), if e.uncertain { " · uncertain" } else { "" }))
+            .map(|e| {
+                format!(
+                    "{} via {} ({:.2}){}{}",
+                    e.action.as_str(),
+                    e.rule,
+                    e.p,
+                    e.dest.as_ref().map(|d| format!(" → {}", display_path(d))).unwrap_or_default(),
+                    if e.uncertain { " · uncertain" } else { "" }
+                )
+            })
             .collect::<Vec<_>>()
             .join("; "),
         OutcomeKind::Blocked { rule, why } => format!("{rule} blocked: {why}"),
@@ -226,7 +241,16 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
 fn item_for(p: &Path) -> Result<Item> {
     use std::os::unix::fs::MetadataExt;
     let md = std::fs::symlink_metadata(p)?;
-    let mut it = Item { path: p.to_path_buf(), is_dir: md.is_dir(), logical: md.len(), alloc: md.blocks() * 512, mtime: md.mtime(), flags: 0, depth: 1, dir: None };
+    let mut it = Item {
+        path: p.to_path_buf(),
+        is_dir: md.is_dir(),
+        logical: md.len(),
+        alloc: md.blocks() * 512,
+        mtime: md.mtime(),
+        flags: 0,
+        depth: 1,
+        dir: None,
+    };
     if it.is_dir {
         items::summarize_dir(&mut it);
     }
@@ -304,9 +328,16 @@ pub fn cmd_judge(c: JudgeCmd) -> Result<()> {
         }
         JudgeCmd::Ask { text, questions, policy, backend } => {
             let (pol, _, _) = crate::plan_cmds::load_policy(policy.as_deref())?;
-            let name = backend.or(pol.judge.default.clone()).or_else(|| pol.judge.backends.keys().next().cloned()).context("no judge configured")?;
+            let name = backend
+                .or(pol.judge.default.clone())
+                .or_else(|| pol.judge.backends.keys().next().cloned())
+                .context("no judge configured")?;
             let j = tidy_judge::build(&backend_config(&name, &pol)?)?;
-            let req = Request { text, images: vec![], questions: questions.iter().enumerate().map(|(i, q)| Question::predicate(format!("q{i}"), q.clone())).collect() };
+            let req = Request {
+                text,
+                images: vec![],
+                questions: questions.iter().enumerate().map(|(i, q)| Question::predicate(format!("q{i}"), q.clone())).collect(),
+            };
             let r = j.decide(&req)?;
             for (i, q) in questions.iter().enumerate() {
                 let p = r.answers.get(&format!("q{i}")).and_then(Answer::p);
@@ -384,7 +415,12 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                 println!("no policy file at {} — run `tidy init`", display_path(&tidy_rules::policy::default_path()));
                 return Ok(());
             };
-            println!("{} {}  {}", ui::bold("policy"), display_path(&path), ui::dim(&format!("{} · mode {:?} · {} rules", hash.unwrap_or_default(), pol.mode, pol.rules.len())));
+            println!(
+                "{} {}  {}",
+                ui::bold("policy"),
+                display_path(&path),
+                ui::dim(&format!("{} · mode {:?} · {} rules", hash.unwrap_or_default(), pol.mode, pol.rules.len()))
+            );
             let calib = Calibration::load();
             let jid = build_judge(&pol, true).ok().flatten().map(|b| b.id);
             let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], jid.as_deref(), &calib);
@@ -403,7 +439,11 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                     r.rule.action,
                     r.threshold,
                     if scopes.is_empty() { ui::yellow("scope missing!") } else { scopes.join(", ") },
-                    ui::dim(&format!("{} criteria{}", r.rule.when.any.len() + r.rule.when.all.len() + r.rule.when.none.len(), if r.deterministic() { " · deterministic" } else { "" }))
+                    ui::dim(&format!(
+                        "{} criteria{}",
+                        r.rule.when.any.len() + r.rule.when.all.len() + r.rule.when.none.len(),
+                        if r.deterministic() { " · deterministic" } else { "" }
+                    ))
                 );
             }
             if let Some(j) = jid {
@@ -447,7 +487,9 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                 let (kind, ps) = l2::decide(&it, &app, resp.as_ref(), &guards, now);
                 let got = match &kind {
                     OutcomeKind::Kept { rule, .. } => rule.clone(),
-                    OutcomeKind::Propose { entries } => entries.iter().find(|e| e.action.exclusive()).or(entries.first()).map(|e| e.rule.clone()).unwrap_or_default(),
+                    OutcomeKind::Propose { entries } => {
+                        entries.iter().find(|e| e.action.exclusive()).or(entries.first()).map(|e| e.rule.clone()).unwrap_or_default()
+                    }
                     _ => "none".into(),
                 };
                 let ok = got == case.expect || (case.expect == "keep" && matches!(kind, OutcomeKind::Kept { .. }));
@@ -470,7 +512,8 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
 
 /// Scope match without requiring the scope to exist on this machine.
 fn applies_lenient(r: &CompiledRule, it: &Item, now: i64) -> bool {
-    let scopes: Vec<PathBuf> = if r.rule.scope.is_empty() { vec![PathBuf::from("/")] } else { r.rule.scope.iter().map(|s| expand_tilde(s)).collect() };
+    let scopes: Vec<PathBuf> =
+        if r.rule.scope.is_empty() { vec![PathBuf::from("/")] } else { r.rule.scope.iter().map(|s| expand_tilde(s)).collect() };
     let mut r2 = r.clone();
     r2.scopes = scopes.into_iter().chain(r.scopes.iter().cloned()).collect();
     r2.applies(it, now)
@@ -480,7 +523,8 @@ fn synth(s: &SynthItem, now: i64) -> (Item, String) {
     let folder = expand_tilde(&s.folder);
     let size = s.size.as_deref().and_then(fmt::parse_bytes).unwrap_or(1_000_000);
     let age = s.age.as_deref().and_then(fmt::parse_duration).unwrap_or(30 * 86_400);
-    let mut it = Item { path: folder.join(&s.name), is_dir: s.dir, logical: size, alloc: size, mtime: now - age, flags: 0, depth: 1, dir: None };
+    let mut it =
+        Item { path: folder.join(&s.name), is_dir: s.dir, logical: size, alloc: size, mtime: now - age, flags: 0, depth: 1, dir: None };
     if s.dir {
         it.dir = Some(items::DirSummary { files: s.files.unwrap_or(10), dirs: 1, newest: now - age, exts: vec![] });
     }
@@ -541,7 +585,10 @@ pub fn cmd_calibrate(c: CalibrateCmd) -> Result<()> {
         sample.truncate(c.count);
         println!("{} items to label · judge {}", sample.len(), built.id);
         let media = l2::Media::load(&pol, built.judge.caps());
-        let reqs: Vec<Request> = sample.iter().map(|(it, app)| l2::build_request(&pol, it, &app.iter().map(|&i| &rules[i]).collect::<Vec<_>>(), now, true, Some(&media))).collect();
+        let reqs: Vec<Request> = sample
+            .iter()
+            .map(|(it, app)| l2::build_request(&pol, it, &app.iter().map(|&i| &rules[i]).collect::<Vec<_>>(), now, true, Some(&media)))
+            .collect();
         let pb = progress_bar("judging");
         let resps = tidy_judge::decide_many(built.judge.as_ref(), &reqs, pol.judge.concurrency.unwrap_or(32), &pb);
         let stdin = std::io::stdin();
@@ -554,7 +601,13 @@ pub fn cmd_calibrate(c: CalibrateCmd) -> Result<()> {
             }
             for (n, r) in rs.iter().enumerate() {
                 let p = l2::rule_probability(r, &resp.answers);
-                println!("  [{}] {:<20} {:<8} model p={}", n + 1, r.rule.id, r.rule.action, p.map(|p| format!("{p:.2}")).unwrap_or("–".into()));
+                println!(
+                    "  [{}] {:<20} {:<8} model p={}",
+                    n + 1,
+                    r.rule.id,
+                    r.rule.action,
+                    p.map(|p| format!("{p:.2}")).unwrap_or("–".into())
+                );
             }
             print!("  which rule should apply? [1-{}], 0 = none, s = skip, q = finish: ", rs.len());
             std::io::stdout().flush()?;
@@ -591,18 +644,20 @@ fn label_applies(r: &CompiledRule, path: &Path) -> bool {
     }
     let it = Item { path: path.to_path_buf(), is_dir: false, logical: 0, alloc: 0, mtime: 0, flags: 0, depth: 1, dir: None };
     let f = &r.filter;
-    if let Some(k) = f.kind.as_deref() {
-        if k != "file" && k != "dir" && it.kind() != k {
-            return false;
-        }
+    if let Some(k) = f.kind.as_deref()
+        && k != "file"
+        && k != "dir"
+        && it.kind() != k
+    {
+        return false;
     }
     if !f.ext.is_empty() && !f.ext.contains(&it.ext()) {
         return false;
     }
-    if let Some(g) = &f.name {
-        if !items::glob_match(&g.to_lowercase(), &it.name().to_lowercase()) {
-            return false;
-        }
+    if let Some(g) = &f.name
+        && !items::glob_match(&g.to_lowercase(), &it.name().to_lowercase())
+    {
+        return false;
     }
     true
 }
@@ -636,7 +691,14 @@ fn fit_and_save(pol: &Policy, rules: &[CompiledRule], built: &BuiltJudge, labels
             pos.iter().cloned().reduce(f64::min).map(|m| {
                 let t = (m * 0.9).min(0.5);
                 let fired = s.iter().filter(|x| x.0 >= t).count().max(1);
-                calib::Fitted { threshold: t, precision: pos.len() as f64 / fired as f64, recall: 1.0, positives: pos.len(), n: s.len(), at: now }
+                calib::Fitted {
+                    threshold: t,
+                    precision: pos.len() as f64 / fired as f64,
+                    recall: 1.0,
+                    positives: pos.len(),
+                    n: s.len(),
+                    at: now,
+                }
             })
         } else {
             calib::fit_threshold(s, target)
@@ -646,7 +708,15 @@ fn fit_and_save(pol: &Policy, rules: &[CompiledRule], built: &BuiltJudge, labels
                 println!("{:<20} {:>6.2} {:>9.2} {:>7.2} {:>5}", r.rule.id, f.threshold, f.precision, f.recall, f.n);
                 entry.insert(r.rule.id.clone(), f);
             }
-            None => println!("{:<20} {:>6} {:>9} {:>7} {:>5}  {}", r.rule.id, "–", "–", "–", s.len(), ui::dim("not enough positive labels / target unreachable")),
+            None => println!(
+                "{:<20} {:>6} {:>9} {:>7} {:>5}  {}",
+                r.rule.id,
+                "–",
+                "–",
+                "–",
+                s.len(),
+                ui::dim("not enough positive labels / target unreachable")
+            ),
         }
     }
     cal.save()?;
@@ -699,7 +769,17 @@ pub fn cmd_bench_judges(c: BenchJudgesCmd) -> Result<()> {
             if app.is_empty() {
                 continue;
             }
-            cases.push((l, it, l2::build_request_text(&pol, l.evidence.clone(), &Item { path: l.path.clone(), is_dir: false, logical: 0, alloc: 0, mtime: now, flags: 0, depth: 1, dir: None }, &app, Some(&media))));
+            cases.push((
+                l,
+                it,
+                l2::build_request_text(
+                    &pol,
+                    l.evidence.clone(),
+                    &Item { path: l.path.clone(), is_dir: false, logical: 0, alloc: 0, mtime: now, flags: 0, depth: 1, dir: None },
+                    &app,
+                    Some(&media),
+                ),
+            ));
         }
         let reqs: Vec<Request> = cases.iter().map(|c| c.2.clone()).collect();
         let resps = tidy_judge::decide_many(j.as_ref(), &reqs, cfg.concurrency.min(16), &|_, _| {});

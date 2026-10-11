@@ -60,15 +60,20 @@ pub struct BackendConfig {
 
 /// Resolve an API key: the named env var, else `fnox get NAME`.
 pub fn resolve_key(var: &str) -> Option<String> {
-    if let Ok(v) = std::env::var(var) {
-        if !v.trim().is_empty() {
-            return Some(v.trim().to_string());
-        }
+    if let Ok(v) = std::env::var(var)
+        && !v.trim().is_empty()
+    {
+        return Some(v.trim().to_string());
     }
     if std::env::var_os("TIDY_NO_FNOX").is_some() {
         return None;
     }
-    let out = std::process::Command::new("fnox").args(["get", var]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let out = std::process::Command::new("fnox")
+        .args(["get", var])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
     let k = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !k.is_empty()).then_some(k)
 }
@@ -79,12 +84,18 @@ pub fn build(cfg: &BackendConfig) -> Result<Box<dyn Judge>, JudgeError> {
     match cfg.kind.as_str() {
         "openai-decisions" => {
             let var = cfg.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
-            let key = resolve_key(var).ok_or_else(|| JudgeError::Config(format!("judge `{}`: {var} is not set (export it or run via `fnox exec --`)", cfg.name)))?;
+            let key = resolve_key(var).ok_or_else(|| {
+                JudgeError::Config(format!("judge `{}`: {var} is not set (export it or run via `fnox exec --`)", cfg.name))
+            })?;
             let caps = Caps { images: cfg.images.unwrap_or(true), max_images: 8, max_questions: cfg.max_questions.unwrap_or(32) };
             Ok(Box::new(openai::OpenAiDecisions::new(&cfg.name, &cfg.model, cfg.endpoint.as_deref(), &key, timeout, conc, caps)?))
         }
         "systemone" => {
-            let default_var = if cfg.endpoint.as_deref().is_some_and(|e| e.contains("cloudflare.com")) { "CLOUDFLARE_API_TOKEN" } else { "TYPESAFE_API_KEY" };
+            let default_var = if cfg.endpoint.as_deref().is_some_and(|e| e.contains("cloudflare.com")) {
+                "CLOUDFLARE_API_TOKEN"
+            } else {
+                "TYPESAFE_API_KEY"
+            };
             let var = cfg.api_key_env.as_deref().unwrap_or(default_var);
             let local = cfg.endpoint.as_deref().is_some_and(|e| e.starts_with("http://localhost") || e.starts_with("http://127.0.0.1"));
             let key = match resolve_key(var) {
@@ -152,11 +163,11 @@ impl<J: Judge> Judge for Cached<J> {
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
         let r = self.inner.decide(req)?;
-        if let Some(f) = self.file.lock().as_mut() {
-            if let Ok(mut line) = serde_json::to_vec(&(&key, &r)) {
-                line.push(b'\n');
-                let _ = f.write_all(&line);
-            }
+        if let Some(f) = self.file.lock().as_mut()
+            && let Ok(mut line) = serde_json::to_vec(&(&key, &r))
+        {
+            line.push(b'\n');
+            let _ = f.write_all(&line);
         }
         self.map.lock().insert(key, r.clone());
         Ok(r)
@@ -252,7 +263,12 @@ pub fn decide_split(j: &dyn Judge, req: &Request) -> Result<Response, JudgeError
 
 /// Run many requests with bounded concurrency. `progress(done, total)` is
 /// called after each completion.
-pub fn decide_many(j: &dyn Judge, reqs: &[Request], concurrency: usize, progress: &(dyn Fn(usize, usize) + Sync)) -> Vec<Result<Response, JudgeError>> {
+pub fn decide_many(
+    j: &dyn Judge,
+    reqs: &[Request],
+    concurrency: usize,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Vec<Result<Response, JudgeError>> {
     let n = reqs.len();
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
@@ -287,7 +303,11 @@ mod tests {
     #[test]
     fn cache_hits_and_persists() {
         let t = tempfile::tempdir().unwrap();
-        let req = Request { text: "a holiday photo of a dog".into(), images: vec![], questions: vec![Question::predicate("dog", "a picture of a dog")] };
+        let req = Request {
+            text: "a holiday photo of a dog".into(),
+            images: vec![],
+            questions: vec![Question::predicate("dog", "a picture of a dog")],
+        };
         let c = Cached::open(mock::Mock::new("m"), Some(t.path().to_path_buf()));
         let a = c.decide(&req).unwrap();
         let b = c.decide(&req).unwrap();

@@ -106,7 +106,10 @@ impl Action {
         !matches!(self, Action::Tag | Action::Copy)
     }
     pub fn destructive(self) -> bool {
-        matches!(self, Action::Delete | Action::Trash | Action::Quarantine | Action::Move | Action::Rename | Action::Archive | Action::Dedupe)
+        matches!(
+            self,
+            Action::Delete | Action::Trash | Action::Quarantine | Action::Move | Action::Rename | Action::Archive | Action::Dedupe
+        )
     }
 }
 

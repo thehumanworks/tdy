@@ -70,10 +70,10 @@ pub fn home_dir() -> PathBuf {
 /// Contract `$HOME` back to `~` for display.
 pub fn display_path(p: &Path) -> String {
     let home = home_dir();
-    if home != Path::new("/") {
-        if let Ok(rest) = p.strip_prefix(&home) {
-            return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
-        }
+    if home != Path::new("/")
+        && let Ok(rest) = p.strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
     }
     p.display().to_string()
 }

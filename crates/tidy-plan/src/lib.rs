@@ -6,5 +6,5 @@ pub mod model;
 pub mod review;
 pub mod store;
 
-pub use exec::{apply, recover, undo, ApplyOptions, Event, Report};
+pub use exec::{ApplyOptions, Event, Report, apply, recover, undo};
 pub use model::*;

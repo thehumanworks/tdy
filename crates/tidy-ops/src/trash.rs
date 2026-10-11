@@ -3,9 +3,9 @@
 //! Both are same-volume renames, so they are instant regardless of size and
 //! cannot fail half-way. Undo is the reverse rename.
 
-use crate::fsops::{create_private_dir, mount_root, rename_noreplace};
 #[cfg(target_os = "macos")]
 use crate::fsops::unique_in;
+use crate::fsops::{create_private_dir, mount_root, rename_noreplace};
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -109,11 +109,11 @@ pub fn forget_trashinfo(trashed: &Path) {
     if cfg!(target_os = "macos") {
         return;
     }
-    if let (Some(files_dir), Some(name)) = (trashed.parent(), trashed.file_name()) {
-        if let Some(trash_root) = files_dir.parent() {
-            let info = trash_root.join("info").join(format!("{}.trashinfo", name.to_string_lossy()));
-            let _ = std::fs::remove_file(info);
-        }
+    if let (Some(files_dir), Some(name)) = (trashed.parent(), trashed.file_name())
+        && let Some(trash_root) = files_dir.parent()
+    {
+        let info = trash_root.join("info").join(format!("{}.trashinfo", name.to_string_lossy()));
+        let _ = std::fs::remove_file(info);
     }
 }
 
@@ -158,10 +158,11 @@ fn xdg_trash_dirs(p: &Path, dev: u64, create: bool) -> Result<(PathBuf, PathBuf)
         if !create {
             return Ok((files, info));
         }
-        if create_private_dir(&files).is_ok() && create_private_dir(&info).is_ok() {
-            if std::fs::metadata(&files).map(|m| m.dev()).ok() == Some(dev) {
-                return Ok((files, info));
-            }
+        if create_private_dir(&files).is_ok()
+            && create_private_dir(&info).is_ok()
+            && std::fs::metadata(&files).map(|m| m.dev()).ok() == Some(dev)
+        {
+            return Ok((files, info));
         }
     }
     Err(TrashError::NoTrashOnVolume(p.to_path_buf()))
@@ -208,7 +209,10 @@ pub fn quarantine_slot(p: &Path, plan: &str, entry: &str, create: bool) -> io::R
     if create {
         create_private_dir(&qd)?;
     }
-    let qd_dev = std::fs::metadata(&qd).or_else(|_| std::fs::metadata(crate::dirs::data_dir())).or_else(|_| std::fs::metadata(tidy_scan::path::home_dir()))?.dev();
+    let qd_dev = std::fs::metadata(&qd)
+        .or_else(|_| std::fs::metadata(crate::dirs::data_dir()))
+        .or_else(|_| std::fs::metadata(tidy_scan::path::home_dir()))?
+        .dev();
     let base = if qd_dev == dev {
         qd
     } else {

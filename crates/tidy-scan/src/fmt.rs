@@ -12,7 +12,13 @@ pub fn bytes(n: u64) -> String {
         v /= 1000.0;
         i += 1;
     }
-    if v >= 100.0 { format!("{v:.0} {}", U[i]) } else if v >= 10.0 { format!("{v:.1} {}", U[i]) } else { format!("{v:.2} {}", U[i]) }
+    if v >= 100.0 {
+        format!("{v:.0} {}", U[i])
+    } else if v >= 10.0 {
+        format!("{v:.1} {}", U[i])
+    } else {
+        format!("{v:.2} {}", U[i])
+    }
 }
 
 /// Parse "50KB", "1.5 GiB", "300M", "1024" into bytes.

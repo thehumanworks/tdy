@@ -51,10 +51,10 @@ fn collect_proc(out: &mut Vec<PathBuf>) -> bool {
         }
         if let Ok(fds) = std::fs::read_dir(base.join("fd")) {
             for fd in fds.flatten() {
-                if let Ok(t) = std::fs::read_link(fd.path()) {
-                    if t.is_absolute() {
-                        out.push(t);
-                    }
+                if let Ok(t) = std::fs::read_link(fd.path())
+                    && t.is_absolute()
+                {
+                    out.push(t);
                 }
             }
         }
@@ -124,12 +124,8 @@ pub fn git_root(p: &Path) -> Option<PathBuf> {
 }
 
 pub fn git_state(root: &Path) -> Option<GitState> {
-    let o = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"])
-        .output()
-        .ok()?;
+    let o =
+        Command::new("git").arg("-C").arg(root).args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"]).output().ok()?;
     if !o.status.success() {
         return None;
     }
@@ -154,14 +150,7 @@ pub fn git_state(root: &Path) -> Option<GitState> {
 
 /// Whether `p` is ignored by the repository at `root` (`git check-ignore`).
 pub fn git_ignored(root: &Path, p: &Path) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["check-ignore", "-q", "--"])
-        .arg(p)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    Command::new("git").arg("-C").arg(root).args(["check-ignore", "-q", "--"]).arg(p).status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Directories synced by cloud providers, where deleting locally deletes remotely.

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tidy_plan::journal::{Journal, Phase};
 use tidy_plan::model::*;
-use tidy_plan::{apply, store, undo, ApplyOptions, Event};
+use tidy_plan::{ApplyOptions, Event, apply, store, undo};
 
 fn home() -> &'static Path {
     static H: OnceLock<tempfile::TempDir> = OnceLock::new();
@@ -199,7 +199,13 @@ fn dry_run_changes_nothing() {
     fixture(&root);
     let before = manifest(&root);
     let mut taken = HashSet::new();
-    let mut plan = new_plan(&root, vec![entry(&root.join("downloads"), Action::Trash, None, &mut taken), entry(&root.join("proj/target"), Action::Delete, None, &mut taken)]);
+    let mut plan = new_plan(
+        &root,
+        vec![
+            entry(&root.join("downloads"), Action::Trash, None, &mut taken),
+            entry(&root.join("proj/target"), Action::Delete, None, &mut taken),
+        ],
+    );
     let r = apply(&mut plan, &ApplyOptions { verify: true, dry_run: true, ..Default::default() }, &no_guard, &mut |_| {}).unwrap();
     assert_eq!(r.would, 2);
     assert_eq!(manifest(&root), before);

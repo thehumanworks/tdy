@@ -4,7 +4,7 @@
 
 use crate::policy::{Filter, Rule};
 use std::path::{Path, PathBuf};
-use tidy_scan::entry::{flags as eflags, Kind, ReadOptions};
+use tidy_scan::entry::{Kind, ReadOptions, flags as eflags};
 use tidy_scan::fmt::{self, parse_bytes, parse_duration};
 use tidy_scan::path::{display_path, expand_tilde, join_cbytes, path_to_cbytes};
 use tidy_scan::platform::Reader;
@@ -48,13 +48,16 @@ impl Item {
 
 pub fn kind_of_ext(ext: &str) -> &'static str {
     match ext {
-        "jpg" | "jpeg" | "png" | "heic" | "heif" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "avif" | "raw" | "cr2" | "cr3" | "nef" | "arw" | "dng" | "raf" | "orf" | "rw2" | "svg" => "image",
+        "jpg" | "jpeg" | "png" | "heic" | "heif" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "avif" | "raw" | "cr2" | "cr3" | "nef"
+        | "arw" | "dng" | "raf" | "orf" | "rw2" | "svg" => "image",
         "mp4" | "mov" | "m4v" | "avi" | "mkv" | "webm" | "wmv" | "mpg" | "mpeg" | "3gp" => "video",
         "mp3" | "m4a" | "wav" | "flac" | "aac" | "ogg" | "aiff" | "aif" | "opus" | "wma" => "audio",
-        "pdf" | "doc" | "docx" | "pages" | "txt" | "md" | "rtf" | "odt" | "xls" | "xlsx" | "numbers" | "csv" | "ppt" | "pptx" | "key" | "epub" | "odp" | "ods" | "tex" => "document",
+        "pdf" | "doc" | "docx" | "pages" | "txt" | "md" | "rtf" | "odt" | "xls" | "xlsx" | "numbers" | "csv" | "ppt" | "pptx" | "key"
+        | "epub" | "odp" | "ods" | "tex" => "document",
         "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "lz4" => "archive",
         "dmg" | "pkg" | "mpkg" | "iso" | "msi" | "exe" | "deb" | "rpm" | "appimage" | "apk" | "ipa" | "xip" => "installer",
-        "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cc" | "cpp" | "h" | "hpp" | "swift" | "kt" | "rb" | "php" | "sh" | "cs" | "scala" | "lua" => "code",
+        "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cc" | "cpp" | "h" | "hpp" | "swift" | "kt" | "rb" | "php"
+        | "sh" | "cs" | "scala" | "lua" => "code",
         _ => "file",
     }
 }
@@ -113,10 +116,10 @@ impl CompiledFilter {
         if !self.ext.is_empty() && !self.ext.contains(&it.ext()) {
             return false;
         }
-        if let Some(g) = &self.name {
-            if !glob_match(&g.to_lowercase(), &it.name().to_lowercase()) {
-                return false;
-            }
+        if let Some(g) = &self.name
+            && !glob_match(&g.to_lowercase(), &it.name().to_lowercase())
+        {
+            return false;
         }
         if self.min_size.is_some_and(|m| it.logical < m) || self.max_size.is_some_and(|m| it.logical > m) {
             return false;
@@ -176,10 +179,34 @@ pub fn list(root: &Path, max_depth: usize, want_dirs: bool, out: &mut Vec<Item>)
                 Kind::Dir => {
                     let is_pkg = path.extension().is_some_and(|x| {
                         let x = x.to_string_lossy().to_lowercase();
-                        matches!(x.as_str(), "app" | "photoslibrary" | "bundle" | "framework" | "pages" | "numbers" | "key" | "rtfd" | "xcodeproj" | "sparsebundle" | "musiclibrary" | "fcpbundle" | "logicx")
+                        matches!(
+                            x.as_str(),
+                            "app"
+                                | "photoslibrary"
+                                | "bundle"
+                                | "framework"
+                                | "pages"
+                                | "numbers"
+                                | "key"
+                                | "rtfd"
+                                | "xcodeproj"
+                                | "sparsebundle"
+                                | "musiclibrary"
+                                | "fcpbundle"
+                                | "logicx"
+                        )
                     });
                     if want_dirs || is_pkg {
-                        out.push(Item { path: path.clone(), is_dir: true, logical: 0, alloc: 0, mtime: e.mtime, flags: e.flags, depth, dir: None });
+                        out.push(Item {
+                            path: path.clone(),
+                            is_dir: true,
+                            logical: 0,
+                            alloc: 0,
+                            mtime: e.mtime,
+                            flags: e.flags,
+                            depth,
+                            dir: None,
+                        });
                     }
                     let artifact = matches!(
                         e.name,
@@ -189,7 +216,16 @@ pub fn list(root: &Path, max_depth: usize, want_dirs: bool, out: &mut Vec<Item>)
                         subdirs.push((path_c, depth + 1));
                     }
                 }
-                Kind::File => out.push(Item { path, is_dir: false, logical: e.logical, alloc: e.alloc, mtime: e.mtime, flags: e.flags, depth, dir: None }),
+                Kind::File => out.push(Item {
+                    path,
+                    is_dir: false,
+                    logical: e.logical,
+                    alloc: e.alloc,
+                    mtime: e.mtime,
+                    flags: e.flags,
+                    depth,
+                    dir: None,
+                }),
                 _ => {}
             }
         });
@@ -237,7 +273,12 @@ pub fn evidence_with(it: &Item, now: i64, redact_home: bool, prov: Option<tidy_o
         let ext = it.ext();
         let kn = kind_name(&ext);
         let k = it.kind();
-        s.push_str(&format!("kind: file ({}{}{})\n", if ext.is_empty() { "no extension".to_string() } else { format!(".{ext}") }, if kn.is_empty() { "" } else { ", " }, if kn.is_empty() { k } else { kn }));
+        s.push_str(&format!(
+            "kind: file ({}{}{})\n",
+            if ext.is_empty() { "no extension".to_string() } else { format!(".{ext}") },
+            if kn.is_empty() { "" } else { ", " },
+            if kn.is_empty() { k } else { kn }
+        ));
     }
     s.push_str(&format!("size: {}\n", fmt::bytes(it.logical)));
     let newest = it.dir.as_ref().map(|d| d.newest.max(it.mtime)).unwrap_or(it.mtime);

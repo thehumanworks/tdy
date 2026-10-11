@@ -5,8 +5,8 @@
 //! synchronisation; the only shared state is the id counter, the hardlink
 //! set (only touched for `nlink > 1`) and atomics for errors.
 
-use crate::entry::{flags, EntryInfo, Kind, ReadOptions};
-use crate::index::{node_flags, DirNode, FileHit, Index, ScanStats, SizeKind, NO_PARENT};
+use crate::entry::{EntryInfo, Kind, ReadOptions, flags};
+use crate::index::{DirNode, FileHit, Index, NO_PARENT, ScanStats, SizeKind, node_flags};
 use crate::path::{join_cbytes, path_to_cbytes};
 use crate::platform::{self, Reader};
 use parking_lot::Mutex;

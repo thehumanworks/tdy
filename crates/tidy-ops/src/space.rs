@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use tidy_scan::visit::{entry_path, visit_files, VisitOptions};
+use tidy_scan::visit::{VisitOptions, entry_path, visit_files};
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct FileRec {
@@ -67,7 +67,15 @@ pub fn find_duplicates(roots: &[PathBuf], min_size: u64, threads: usize) -> io::
     for r in roots {
         visit_files(r, &opts, |dir, e| {
             if e.kind == tidy_scan::Kind::File && e.logical >= min_size && e.flags & tidy_scan::entry::flags::DATALESS == 0 {
-                let rec = FileRec { path: entry_path(dir, e.name), dev: e.dev, ino: e.ino, size: e.logical, alloc: e.alloc, private: e.private, mtime: e.mtime };
+                let rec = FileRec {
+                    path: entry_path(dir, e.name),
+                    dev: e.dev,
+                    ino: e.ino,
+                    size: e.logical,
+                    alloc: e.alloc,
+                    private: e.private,
+                    mtime: e.mtime,
+                };
                 recs.lock().push(rec);
             }
         })?;
@@ -83,14 +91,16 @@ pub fn find_duplicates(roots: &[PathBuf], min_size: u64, threads: usize) -> io::
     }
     let candidates: Vec<FileRec> = by_size.into_values().filter(|v| v.len() > 1).flatten().collect();
     // stage 2: sample hash
-    let sampled: Vec<(FileRec, [u8; 32])> = candidates.into_par_iter().filter_map(|r| sample_hash(&r.path, r.size).ok().map(|h| (r, h))).collect();
+    let sampled: Vec<(FileRec, [u8; 32])> =
+        candidates.into_par_iter().filter_map(|r| sample_hash(&r.path, r.size).ok().map(|h| (r, h))).collect();
     let mut by_sample: HashMap<(u64, u64, [u8; 32]), Vec<FileRec>> = HashMap::new();
     for (r, h) in sampled {
         by_sample.entry((r.dev, r.size, h)).or_default().push(r);
     }
     let candidates: Vec<FileRec> = by_sample.into_values().filter(|v| v.len() > 1).flatten().collect();
     // stage 3: full hash
-    let full: Vec<(FileRec, String)> = candidates.into_par_iter().filter_map(|r| crate::fingerprint::hash_file(&r.path).ok().map(|h| (r, h))).collect();
+    let full: Vec<(FileRec, String)> =
+        candidates.into_par_iter().filter_map(|r| crate::fingerprint::hash_file(&r.path).ok().map(|h| (r, h))).collect();
     let mut by_hash: HashMap<(u64, String), Vec<FileRec>> = HashMap::new();
     for (r, h) in full {
         by_hash.entry((r.dev, h)).or_default().push(r);
@@ -99,7 +109,7 @@ pub fn find_duplicates(roots: &[PathBuf], min_size: u64, threads: usize) -> io::
         .into_iter()
         .filter(|(_, v)| v.len() > 1)
         .map(|((_, hash), mut files)| {
-            files.sort_by_key(|f| keeper_rank(f));
+            files.sort_by_key(keeper_rank);
             DupGroup { size: files[0].size, hash, files }
         })
         .collect();
@@ -110,7 +120,8 @@ pub fn find_duplicates(roots: &[PathBuf], min_size: u64, threads: usize) -> io::
 /// Lower is a better keeper: not in transient folders, oldest, shortest path.
 fn keeper_rank(f: &FileRec) -> (u8, i64, usize) {
     let s = f.path.to_string_lossy();
-    let transient = ["/Downloads/", "/Desktop/", "/tmp/", "/Trash/", "/.Trash/", "/Caches/", " copy", "(1)", "(2)"].iter().any(|t| s.contains(t));
+    let transient =
+        ["/Downloads/", "/Desktop/", "/tmp/", "/Trash/", "/.Trash/", "/Caches/", " copy", "(1)", "(2)"].iter().any(|t| s.contains(t));
     (transient as u8, f.mtime, s.len())
 }
 

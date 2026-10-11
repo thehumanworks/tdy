@@ -5,14 +5,14 @@
 //! policy approved in autonomous mode. Nothing an agent sends can approve.
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use tidy_plan::model::*;
-use tidy_plan::{review, store, ApplyOptions};
+use tidy_plan::{ApplyOptions, review, store};
 use tidy_rules::guards::{Facts, Guards};
-use tidy_scan::{fmt, path::expand_tilde, ScanOptions, SizeKind};
+use tidy_scan::{ScanOptions, SizeKind, fmt, path::expand_tilde};
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -138,10 +138,15 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             let root = canon(s(a, "path").unwrap_or("~"))?;
             let by: SizeKind = s(a, "by").unwrap_or("alloc").parse().map_err(anyhow::Error::msg)?;
             let n = a.get("lines").and_then(Value::as_u64).unwrap_or(20) as usize;
-            let idx = tidy_scan::scan(&root, &ScanOptions { top_k: n.max(64), top_by: by, private: by == SizeKind::Private, ..Default::default() })?;
+            let idx = tidy_scan::scan(
+                &root,
+                &ScanOptions { top_k: n.max(64), top_by: by, private: by == SizeKind::Private, ..Default::default() },
+            )?;
             let r = idx.root_node();
-            Ok(json!({"root": idx.root, "logical": r.logical, "alloc": r.alloc, "private": r.private, "files": r.files, "dirs": idx.stats.dirs,
-                      "elapsed_ms": idx.stats.elapsed_ms, "tree": idx.tree(0, n, by, None)}))
+            Ok(
+                json!({"root": idx.root, "logical": r.logical, "alloc": r.alloc, "private": r.private, "files": r.files, "dirs": idx.stats.dirs,
+                      "elapsed_ms": idx.stats.elapsed_ms, "tree": idx.tree(0, n, by, None)}),
+            )
         }
         "tidy_top" => {
             let root = canon(s(a, "path").unwrap_or("~"))?;
@@ -150,7 +155,12 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             if a.get("dirs").and_then(Value::as_bool) == Some(true) {
                 Ok(json!(idx.top_dirs_own(n).into_iter().map(|(id, b)| json!({"path": idx.path(id), "own_alloc": b})).collect::<Vec<_>>()))
             } else {
-                Ok(json!(idx.top_files.iter().map(|f| json!({"path": idx.file_path(f), "alloc": f.alloc, "logical": f.logical, "mtime": f.mtime})).collect::<Vec<_>>()))
+                Ok(json!(
+                    idx.top_files
+                        .iter()
+                        .map(|f| json!({"path": idx.file_path(f), "alloc": f.alloc, "logical": f.logical, "mtime": f.mtime}))
+                        .collect::<Vec<_>>()
+                ))
             }
         }
         "tidy_explain" => {
@@ -258,8 +268,11 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
         "tidy_undo" => {
             let (mut plan, _) = store::load(s(a, "plan"))?;
             let ids = strs(a, "entries");
-            let only: Option<HashSet<String>> =
-                if ids.is_empty() { None } else { Some(plan.entries.iter().filter(|e| ids.iter().any(|w| e.id.starts_with(w.as_str()))).map(|e| e.id.clone()).collect()) };
+            let only: Option<HashSet<String>> = if ids.is_empty() {
+                None
+            } else {
+                Some(plan.entries.iter().filter(|e| ids.iter().any(|w| e.id.starts_with(w.as_str()))).map(|e| e.id.clone()).collect())
+            };
             let mut events = Vec::new();
             let r = tidy_plan::undo(&mut plan, only.as_ref(), &mut |ev| {
                 if let tidy_plan::Event::Ok(e, m) | tidy_plan::Event::Skip(e, m) | tidy_plan::Event::Fail(e, m) = ev {
@@ -273,7 +286,8 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             Ok(json!({"passed": out.status.success(), "output": String::from_utf8_lossy(&out.stdout)}))
         }
         "tidy_dupes" => {
-            let mut args = vec!["dupes".to_string(), "--json".to_string(), "--min-size".to_string(), s(a, "min_size").unwrap_or("1MB").to_string()];
+            let mut args =
+                vec!["dupes".to_string(), "--json".to_string(), "--min-size".to_string(), s(a, "min_size").unwrap_or("1MB").to_string()];
             args.extend(strs(a, "paths"));
             run_self(&args)
         }
@@ -329,7 +343,7 @@ fn propose(a: &Value) -> Result<Value> {
         }
         let id = entry_id(&path, action, &taken);
         taken.insert(id.clone());
-        let (logical, alloc) = if fp.kind == tidy_ops::FKind::Dir { (fp.size, fp.size) } else { (fp.size, fp.size) };
+        let (logical, alloc) = (fp.size, fp.size);
         plan.entries.push(Entry {
             id,
             status: Status::Pending,
@@ -353,7 +367,8 @@ fn propose(a: &Value) -> Result<Value> {
     if plan.entries.is_empty() {
         return Ok(json!({"plan": null, "rejected": rejected}));
     }
-    plan.header.roots = plan.entries.iter().filter_map(|e| e.path.parent().map(|p| p.to_path_buf())).collect::<HashSet<_>>().into_iter().collect();
+    plan.header.roots =
+        plan.entries.iter().filter_map(|e| e.path.parent().map(|p| p.to_path_buf())).collect::<HashSet<_>>().into_iter().collect();
     store::save(&plan)?;
     Ok(json!({"plan": plan.header.id, "entries": plan.entries.iter().map(compact).collect::<Vec<_>>(), "rejected": rejected,
               "next": format!("Ask the user to review and approve: `tidy review {}`", plan.header.id), "reclaimable": fmt::bytes(plan.counts().reclaimable)}))
@@ -374,7 +389,12 @@ mod tests {
         let f = t.path().join("victim.bin");
         std::fs::write(&f, vec![0u8; 1000]).unwrap();
         // make it old enough for the removal guard
-        std::fs::File::options().write(true).open(&f).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86_400)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86_400))
+            .unwrap();
         let v = call("tidy_propose", &json!({"actions": [{"action": "trash", "path": f, "reason": "test"}]})).unwrap();
         let plan = v["plan"].as_str().unwrap().to_string();
         // pending: refused

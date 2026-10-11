@@ -67,7 +67,15 @@ pub fn save(idx: &Index, path: &Path) -> io::Result<()> {
     let tops: Vec<TopFile> = idx
         .top_files
         .iter()
-        .map(|h| TopFile { dir: h.dir, name: h.name.to_vec(), logical: h.logical, alloc: h.alloc, private: h.private, mtime: h.mtime, flags: h.flags })
+        .map(|h| TopFile {
+            dir: h.dir,
+            name: h.name.to_vec(),
+            logical: h.logical,
+            alloc: h.alloc,
+            private: h.private,
+            mtime: h.mtime,
+            flags: h.flags,
+        })
         .collect();
     serde_json::to_writer(&mut f, &tops)?;
     f.flush()?;
@@ -105,7 +113,15 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
     let tops: Vec<TopFile> = serde_json::from_slice(&rest).map_err(io::Error::other)?;
     let top_files = tops
         .into_iter()
-        .map(|t| FileHit { dir: t.dir, name: t.name.into(), logical: t.logical, alloc: t.alloc, private: t.private, mtime: t.mtime, flags: t.flags })
+        .map(|t| FileHit {
+            dir: t.dir,
+            name: t.name.into(),
+            logical: t.logical,
+            alloc: t.alloc,
+            private: t.private,
+            mtime: t.mtime,
+            flags: t.flags,
+        })
         .collect();
     let stats = ScanStats {
         files: hdr.files,

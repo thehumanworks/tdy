@@ -11,7 +11,7 @@ use tidy_plan::model::*;
 use tidy_plan::store;
 use tidy_rules::guards::{Facts, Guards};
 use tidy_rules::planner;
-use tidy_scan::{fmt, path::display_path, path::expand_tilde, SizeKind};
+use tidy_scan::{SizeKind, fmt, path::display_path, path::expand_tilde};
 
 fn roots(paths: &[String]) -> Result<Vec<PathBuf>> {
     paths.iter().map(|p| std::fs::canonicalize(expand_tilde(p)).with_context(|| p.clone())).collect()
@@ -41,7 +41,10 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
     let groups = space::find_duplicates(&roots, min, c.threads)?;
     let total: u64 = groups.iter().map(|g| g.reclaimable()).sum();
     if c.json {
-        println!("{}", serde_json::json!({"groups": groups.iter().take(c.lines).collect::<Vec<_>>(), "reclaimable": total, "count": groups.len()}));
+        println!(
+            "{}",
+            serde_json::json!({"groups": groups.iter().take(c.lines).collect::<Vec<_>>(), "reclaimable": total, "count": groups.len()})
+        );
         return Ok(());
     }
     println!(
@@ -53,7 +56,12 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
         println!("  {:>9} × {}  {}", fmt::bytes(g.size), g.files.len(), ui::dim(&format!("{} reclaimable", fmt::bytes(g.reclaimable()))));
         for (i, f) in g.files.iter().enumerate() {
             let shared = f.private.is_some_and(|p| p < f.alloc / 2);
-            println!("      {} {}{}", if i == 0 { ui::green("keep") } else { ui::dim("dup ") }, display_path(&f.path), if shared { ui::dim("  (already shares storage)") } else { String::new() });
+            println!(
+                "      {} {}{}",
+                if i == 0 { ui::green("keep") } else { ui::dim("dup ") },
+                display_path(&f.path),
+                if shared { ui::dim("  (already shares storage)") } else { String::new() }
+            );
         }
     }
     if !c.plan {
@@ -100,7 +108,10 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
                 reason: if can_clone {
                     format!("identical to {} — replace with a copy-on-write clone (path stays, space freed)", display_path(&keeper.path))
                 } else {
-                    format!("identical to {} — this filesystem cannot share storage, so the copy goes to the trash", display_path(&keeper.path))
+                    format!(
+                        "identical to {} — this filesystem cannot share storage, so the copy goes to the trash",
+                        display_path(&keeper.path)
+                    )
                 },
                 undo: if can_clone { Undo::None } else { Undo::Restore },
                 alternatives: vec![],
@@ -154,7 +165,10 @@ pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
     for root in &roots {
         let idx = tidy_scan::scan(root, &tidy_scan::ScanOptions { top_k: 0, ..Default::default() })?;
         // Regenerable artifacts are for deletion, not archiving.
-        let artifacts: Vec<PathBuf> = tidy_rules::detect::detect(&idx, &tidy_rules::detect::DetectConfig { min_size: 0, ..dcfg.clone() }).into_iter().map(|f| f.path).collect();
+        let artifacts: Vec<PathBuf> = tidy_rules::detect::detect(&idx, &tidy_rules::detect::DetectConfig { min_size: 0, ..dcfg.clone() })
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         for id in idx.stale_dirs(cutoff, min, SizeKind::Alloc) {
             let p = idx.path(id);
             if artifacts.iter().any(|a| p.starts_with(a) || a.starts_with(&p)) {
@@ -187,13 +201,21 @@ pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
                 tags: vec![],
                 bytes: Bytes { logical: node.logical, alloc: node.alloc, private: est },
                 fingerprint: fp,
-                source: Source { layer: Layer::L1, rule: if action == Action::Compress { "cold-compress".into() } else { "cold-archive".into() }, p: None },
+                source: Source {
+                    layer: Layer::L1,
+                    rule: if action == Action::Compress { "cold-compress".into() } else { "cold-archive".into() },
+                    p: None,
+                },
                 reason: format!(
                     "untouched for {} · sample compresses to {:.0}% · ≈{} saved{}",
                     fmt::age(fmt::now_secs() - node.mtime_max),
                     ratio * 100.0,
                     fmt::bytes(est),
-                    if action == Action::Archive { " (original kept in quarantine until purged)" } else { " (transparent: files stay where they are)" }
+                    if action == Action::Archive {
+                        " (original kept in quarantine until purged)"
+                    } else {
+                        " (transparent: files stay where they are)"
+                    }
                 ),
                 undo: if action == Action::Archive { Undo::Restore } else { Undo::None },
                 alternatives: vec![],
@@ -205,7 +227,12 @@ pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
     plan.entries.sort_by_key(|e| std::cmp::Reverse(e.bytes.private));
     store::save(&plan)?;
     let cnt = plan.counts();
-    println!("{} {}  {}", ui::bold("plan"), ui::bold(&plan.header.id), ui::dim(&format!("{} cold folders · ≈{} saved", cnt.total, fmt::bytes(cnt.reclaimable))));
+    println!(
+        "{} {}  {}",
+        ui::bold("plan"),
+        ui::bold(&plan.header.id),
+        ui::dim(&format!("{} cold folders · ≈{} saved", cnt.total, fmt::bytes(cnt.reclaimable)))
+    );
     for e in plan.entries.iter().take(c.lines) {
         println!("  {}", tidy_plan::review::line(e));
     }

@@ -3,7 +3,7 @@
 use crate::http::Http;
 use crate::ir::{Answer, Caps, QKind, Request, Response};
 use crate::{Judge, JudgeError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_ENDPOINT: &str = "https://api.openai.com/v1/decisions";
@@ -16,7 +16,15 @@ pub struct OpenAiDecisions {
 }
 
 impl OpenAiDecisions {
-    pub fn new(name: &str, model: &str, endpoint: Option<&str>, api_key: &str, timeout: Duration, concurrency: usize, caps: Caps) -> Result<Self, JudgeError> {
+    pub fn new(
+        name: &str,
+        model: &str,
+        endpoint: Option<&str>,
+        api_key: &str,
+        timeout: Duration,
+        concurrency: usize,
+        caps: Caps,
+    ) -> Result<Self, JudgeError> {
         let url = endpoint.unwrap_or(DEFAULT_ENDPOINT).to_string();
         crate::http::validate_url(&url)?;
         let http = Http::new(url, vec![("Authorization".into(), format!("Bearer {api_key}"))], timeout, concurrency);
@@ -67,7 +75,9 @@ pub fn parse(v: &Value, req: &Request) -> Result<Response, JudgeError> {
             .ok_or_else(|| JudgeError::Protocol("answer without name".into()))?;
         let ty = a.get("type").and_then(Value::as_str).unwrap_or("");
         let ans = match ty {
-            "predicate" => Answer::Predicate { p: a.get("probability").and_then(Value::as_f64).ok_or_else(|| JudgeError::Protocol(format!("{name}: no probability")))? },
+            "predicate" => Answer::Predicate {
+                p: a.get("probability").and_then(Value::as_f64).ok_or_else(|| JudgeError::Protocol(format!("{name}: no probability")))?,
+            },
             "choice" => {
                 let choice = match a.get("choice") {
                     Some(Value::String(s)) => s.clone(),
@@ -97,7 +107,11 @@ pub fn parse(v: &Value, req: &Request) -> Result<Response, JudgeError> {
                     .and_then(Value::as_array)
                     .map(|ps| ps.iter().filter_map(|p| p.get("probability").and_then(Value::as_f64)).collect())
                     .unwrap_or_default();
-                Answer::Score { score: a.get("score").and_then(Value::as_f64).unwrap_or(0.0), probs, confidence: a.get("confidence").and_then(Value::as_f64) }
+                Answer::Score {
+                    score: a.get("score").and_then(Value::as_f64).unwrap_or(0.0),
+                    probs,
+                    confidence: a.get("confidence").and_then(Value::as_f64),
+                }
             }
             "refusal" => Answer::Refusal,
             other => return Err(JudgeError::Protocol(format!("{name}: unknown answer type `{other}`"))),
@@ -140,7 +154,11 @@ mod tests {
             images: vec![],
             questions: vec![
                 Question::predicate("dup", "Is this a duplicate charge?"),
-                Question::choice("dept", "Which department?", vec![("billing".into(), "Payments".into()), ("other".into(), "Other".into())]),
+                Question::choice(
+                    "dept",
+                    "Which department?",
+                    vec![("billing".into(), "Payments".into()), ("other".into(), "Other".into())],
+                ),
                 Question::score("sev", "How severe?", vec![("Cosmetic".into(), "".into()), ("Blocked".into(), "".into())]),
             ],
         };

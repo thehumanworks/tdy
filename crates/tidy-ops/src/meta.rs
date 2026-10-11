@@ -76,10 +76,10 @@ pub fn provenance(p: &Path) -> Provenance {
             let s = String::from_utf8_lossy(&v).into_owned();
             out.downloaded_by = s.split(';').nth(2).filter(|a| !a.is_empty()).map(str::to_string).or(Some("unknown".into()));
         }
-        if let Some(v) = xattr(p, "com.apple.lastuseddate#PS") {
-            if v.len() >= 8 {
-                out.last_used = Some(i64::from_le_bytes(v[..8].try_into().unwrap()));
-            }
+        if let Some(v) = xattr(p, "com.apple.lastuseddate#PS")
+            && v.len() >= 8
+        {
+            out.last_used = Some(i64::from_le_bytes(v[..8].try_into().unwrap()));
         }
     } else {
         for k in ["user.xdg.origin.url", "user.xdg.referrer.url"] {
@@ -201,7 +201,13 @@ pub fn bplist_encode_strings(items: &[String]) -> Vec<u8> {
         }
     }
     let table = out.len();
-    let off_size = if table < 256 { 1 } else if table < 65536 { 2 } else { 4 };
+    let off_size = if table < 256 {
+        1
+    } else if table < 65536 {
+        2
+    } else {
+        4
+    };
     for o in &offsets {
         let bytes = (*o as u64).to_be_bytes();
         out.extend_from_slice(&bytes[8 - off_size..]);

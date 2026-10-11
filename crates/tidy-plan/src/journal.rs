@@ -59,7 +59,15 @@ impl Journal {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn log(&mut self, entry: &str, phase: Phase, action: &str, from: &std::path::Path, to: Option<&std::path::Path>, note: Option<String>) -> Result<()> {
+    pub fn log(
+        &mut self,
+        entry: &str,
+        phase: Phase,
+        action: &str,
+        from: &std::path::Path,
+        to: Option<&std::path::Path>,
+        note: Option<String>,
+    ) -> Result<()> {
         self.write(&Record {
             ts: tidy_scan::fmt::now_secs(),
             entry: entry.to_string(),

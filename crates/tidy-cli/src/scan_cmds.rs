@@ -4,7 +4,7 @@ use crate::ui;
 use anyhow::{Context, Result};
 use clap::Args;
 use std::path::PathBuf;
-use tidy_scan::{fmt, path, snapshot, ScanOptions, SizeKind};
+use tidy_scan::{ScanOptions, SizeKind, fmt, path, snapshot};
 
 #[derive(Args, Clone)]
 pub struct ScanArgs {
@@ -152,7 +152,10 @@ pub fn cmd_top(c: TopCmd) -> Result<()> {
     if c.dirs {
         let rows = idx.top_dirs_own(c.lines);
         if c.scan.json {
-            let v: Vec<_> = rows.iter().map(|&(id, b)| serde_json::json!({"path": idx.path(id), "own_alloc": b, "files": idx.nodes[id as usize].files})).collect();
+            let v: Vec<_> = rows
+                .iter()
+                .map(|&(id, b)| serde_json::json!({"path": idx.path(id), "own_alloc": b, "files": idx.nodes[id as usize].files}))
+                .collect();
             println!("{}", serde_json::to_string(&v)?);
             return Ok(());
         }
@@ -195,7 +198,12 @@ pub fn cmd_diff(c: DiffCmd) -> Result<()> {
     println!(
         "{}  {}",
         ui::bold(&path::display_path(&root)),
-        ui::dim(&format!("since {} ago · {} → {}", fmt::age(fmt::now_secs() - old.created), fmt::bytes(old.index.root_node().size(c.scan.by)), fmt::bytes(idx.root_node().size(c.scan.by))))
+        ui::dim(&format!(
+            "since {} ago · {} → {}",
+            fmt::age(fmt::now_secs() - old.created),
+            fmt::bytes(old.index.root_node().size(c.scan.by)),
+            fmt::bytes(idx.root_node().size(c.scan.by))
+        ))
     );
     for (p, d) in kept {
         if shown >= c.lines {

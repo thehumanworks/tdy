@@ -9,7 +9,7 @@
 use crate::http::Http;
 use crate::ir::{Answer, Caps, QKind, Request, Response};
 use crate::{Judge, JudgeError};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::time::{Duration, Instant};
 
 pub const TYPESAFE_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
@@ -22,7 +22,15 @@ pub struct SystemOne {
 }
 
 impl SystemOne {
-    pub fn new(name: &str, model: &str, endpoint: Option<&str>, api_key: &str, timeout: Duration, concurrency: usize, caps: Caps) -> Result<Self, JudgeError> {
+    pub fn new(
+        name: &str,
+        model: &str,
+        endpoint: Option<&str>,
+        api_key: &str,
+        timeout: Duration,
+        concurrency: usize,
+        caps: Caps,
+    ) -> Result<Self, JudgeError> {
         let url = endpoint.unwrap_or(TYPESAFE_ENDPOINT).to_string();
         let local = url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
         let mut headers = Vec::new();
@@ -59,7 +67,8 @@ pub fn body(model: &str, req: &Request, images: bool) -> Value {
     let mut b = json!({"model": model, "questions": qs});
     if images && !req.images.is_empty() {
         b["images"] = Value::Array(req.images.iter().map(|i| Value::String(i.data_url())).collect());
-        let captions: Vec<String> = req.images.iter().enumerate().filter_map(|(n, i)| i.caption.as_ref().map(|c| format!("image {}: {c}", n + 1))).collect();
+        let captions: Vec<String> =
+            req.images.iter().enumerate().filter_map(|(n, i)| i.caption.as_ref().map(|c| format!("image {}: {c}", n + 1))).collect();
         if !captions.is_empty() {
             state.push_str("\n\nIMAGES\n");
             state.push_str(&captions.join("\n"));
@@ -74,7 +83,8 @@ pub fn parse(v: &Value, req: &Request) -> Result<Response, JudgeError> {
         Some(r) if r.get("answers").is_some() => r,
         _ => v,
     };
-    let answers = v.get("answers").and_then(Value::as_object).ok_or_else(|| JudgeError::Protocol("response has no `answers` object".into()))?;
+    let answers =
+        v.get("answers").and_then(Value::as_object).ok_or_else(|| JudgeError::Protocol("response has no `answers` object".into()))?;
     let mut out = Response::default();
     for q in &req.questions {
         let Some(a) = answers.get(&q.name) else {
@@ -152,7 +162,11 @@ mod tests {
             questions: vec![
                 Question::predicate("followup", "Needs follow-up?"),
                 Question::choice("sentiment", "Overall?", vec![("positive".into(), "happy".into()), ("mixed".into(), "both".into())]),
-                Question::score("sat", "Satisfaction", vec![("low".into(), "".into()), ("medium".into(), "".into()), ("high".into(), "".into())]),
+                Question::score(
+                    "sat",
+                    "Satisfaction",
+                    vec![("low".into(), "".into()), ("medium".into(), "".into()), ("high".into(), "".into())],
+                ),
             ],
         };
         let b = body("jev-latest", &req, false);

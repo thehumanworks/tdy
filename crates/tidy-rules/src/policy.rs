@@ -1,7 +1,7 @@
 //! The policy file (`~/.config/tidy/policy.toml`): mode, guard knobs,
 //! detector settings, judge backends, subjects and natural-language rules.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -231,10 +231,10 @@ impl Policy {
             if a == "tag" && r.tags.is_empty() {
                 bail!("rule `{}`: `tag` needs `tags = [...]`", r.id);
             }
-            if let Some(t) = r.threshold {
-                if !(0.0..=1.0).contains(&t) {
-                    bail!("rule `{}`: threshold must be within 0..1", r.id);
-                }
+            if let Some(t) = r.threshold
+                && !(0.0..=1.0).contains(&t)
+            {
+                bail!("rule `{}`: threshold must be within 0..1", r.id);
             }
             for s in [&r.filter.min_size, &r.filter.max_size].into_iter().flatten() {
                 parse_bytes(s).with_context(|| format!("rule `{}`: bad size `{s}`", r.id))?;
@@ -249,10 +249,10 @@ impl Policy {
                     }
                 }
             }
-            if let Some(j) = &r.judge {
-                if !self.judge.backends.contains_key(j) {
-                    bail!("rule `{}`: unknown judge `{j}`", r.id);
-                }
+            if let Some(j) = &r.judge
+                && !self.judge.backends.contains_key(j)
+            {
+                bail!("rule `{}`: unknown judge `{j}`", r.id);
             }
         }
         for j in self.judge.cascade.iter().chain(self.judge.default.iter()) {
@@ -388,7 +388,7 @@ mod tests {
         let p: Policy = toml::from_str(EXAMPLE).unwrap();
         p.validate().unwrap();
         assert_eq!(p.rules.len(), 3);
-        assert_eq!(p.rules[2].to.as_ref().unwrap().create_if_missing, true);
+        assert!(p.rules[2].to.as_ref().unwrap().create_if_missing);
         let g = p.guard_config();
         assert!(g.destinations.iter().any(|d| d.ends_with("Pictures/Dogs")));
         assert_eq!(subject_refs("picture of {me} next to a dog"), vec!["me"]);

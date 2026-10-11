@@ -12,4 +12,4 @@ pub mod walk;
 
 pub use entry::{EntryInfo, Kind, ReadOptions};
 pub use index::{DirNode, FileHit, Index, ScanStats, SizeKind, TreeRow};
-pub use walk::{default_threads, scan, ScanError, ScanOptions};
+pub use walk::{ScanError, ScanOptions, default_threads, scan};

@@ -8,4 +8,4 @@ pub mod probe;
 pub mod space;
 pub mod trash;
 
-pub use fingerprint::{fingerprint, verify, Drift, FKind, Fingerprint};
+pub use fingerprint::{Drift, FKind, Fingerprint, fingerprint, verify};

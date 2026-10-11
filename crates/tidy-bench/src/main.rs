@@ -50,8 +50,31 @@ impl Rng {
 }
 
 const WORDS: &[&str] = &[
-    "src", "lib", "assets", "photos", "2023", "2024", "2025", "docs", "build", "cache", "node_modules", "vendor", "tmp", "data",
-    "music", "projects", "notes", "archive", "backup", "images", "video", "drafts", "config", "test", "fixtures",
+    "src",
+    "lib",
+    "assets",
+    "photos",
+    "2023",
+    "2024",
+    "2025",
+    "docs",
+    "build",
+    "cache",
+    "node_modules",
+    "vendor",
+    "tmp",
+    "data",
+    "music",
+    "projects",
+    "notes",
+    "archive",
+    "backup",
+    "images",
+    "video",
+    "drafts",
+    "config",
+    "test",
+    "fixtures",
 ];
 const EXTS: &[&str] = &["txt", "jpg", "png", "rs", "js", "json", "md", "pdf", "mp4", "heic", "o", "zip", "csv", "py"];
 
@@ -80,9 +103,7 @@ fn main() -> Result<()> {
     for i in 0..a.files {
         let d = rng.below(ndirs as u64) as usize;
         let roll = rng.below(1000);
-        let size = if a.empty {
-            0
-        } else if roll < 600 {
+        let size = if a.empty || roll < 600 {
             0
         } else if roll < 900 {
             1 + rng.below(4096)

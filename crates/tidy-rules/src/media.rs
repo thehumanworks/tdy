@@ -60,12 +60,11 @@ fn parse_tiff_date(t: &[u8]) -> Option<i64> {
         if tag == 0x8769 {
             let exif = read_ifd(u32_at(field)? as usize)?;
             for &(t2, _, c2, f2) in &exif {
-                if t2 == 0x9003 || t2 == 0x9004 {
-                    if let Some(s) = ascii(c2, f2) {
-                        if let Some(ts) = parse_exif_datetime(&s) {
-                            return Some(ts);
-                        }
-                    }
+                if (t2 == 0x9003 || t2 == 0x9004)
+                    && let Some(s) = ascii(c2, f2)
+                    && let Some(ts) = parse_exif_datetime(&s)
+                {
+                    return Some(ts);
                 }
             }
         }
@@ -93,50 +92,6 @@ pub fn parse_exif_datetime(s: &str) -> Option<i64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
     Some(days * 86_400 + h * 3600 + mi * 60 + se)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Minimal little-endian TIFF with IFD0 → ExifIFD → DateTimeOriginal.
-    fn tiff_with_date(date: &str) -> Vec<u8> {
-        let mut t = b"II*\0".to_vec();
-        t.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at 8
-        // IFD0: 1 entry (ExifIFD pointer)
-        t.extend_from_slice(&1u16.to_le_bytes());
-        t.extend_from_slice(&0x8769u16.to_le_bytes());
-        t.extend_from_slice(&4u16.to_le_bytes());
-        t.extend_from_slice(&1u32.to_le_bytes());
-        t.extend_from_slice(&26u32.to_le_bytes()); // exif ifd at 26
-        t.extend_from_slice(&0u32.to_le_bytes());
-        // Exif IFD at 26: 1 entry DateTimeOriginal, ASCII, 20 bytes at 44
-        t.extend_from_slice(&1u16.to_le_bytes());
-        t.extend_from_slice(&0x9003u16.to_le_bytes());
-        t.extend_from_slice(&2u16.to_le_bytes());
-        t.extend_from_slice(&20u32.to_le_bytes());
-        t.extend_from_slice(&44u32.to_le_bytes());
-        t.extend_from_slice(&0u32.to_le_bytes());
-        t.extend_from_slice(date.as_bytes());
-        t.push(0);
-        t
-    }
-
-    #[test]
-    fn exif_in_jpeg() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE1, 0, 0];
-        jpg.extend_from_slice(b"Exif\0\0");
-        jpg.extend_from_slice(&tiff_with_date("2023:07:14 18:30:05"));
-        jpg.extend_from_slice(&[0xFF, 0xD9]);
-        let p = dir.path().join("a.jpg");
-        std::fs::write(&p, &jpg).unwrap();
-        let ts = taken_at(&p).unwrap();
-        assert_eq!(crate::items::ymd(ts), "2023-07-14");
-        assert_eq!(parse_exif_datetime("2024:02:29 00:00:00").map(crate::items::ymd), Some("2024-02-29".into()));
-        std::fs::write(&p, b"not an image").unwrap();
-        assert!(taken_at(&p).is_none());
-    }
 }
 
 // ---- thumbnails ------------------------------------------------------------------
@@ -227,7 +182,11 @@ fn decode_jpeg_scaled(p: &Path, max_side: u32) -> Option<image::DynamicImage> {
 
 /// HEIC/HEIF/RAW: let the OS render a JPEG (macOS `sips`, Linux `heif-convert`).
 fn system_thumbnail(p: &Path, max_side: u32) -> Option<tidy_judge::Image> {
-    let tmp = std::env::temp_dir().join(format!("tidy-thumb-{}-{}.jpg", std::process::id(), blake3::hash(tidy_scan::path::path_bytes(p)).to_hex()));
+    let tmp = std::env::temp_dir().join(format!(
+        "tidy-thumb-{}-{}.jpg",
+        std::process::id(),
+        blake3::hash(tidy_scan::path::path_bytes(p)).to_hex()
+    ));
     let ok = if cfg!(target_os = "macos") {
         std::process::Command::new("sips")
             .args(["-s", "format", "jpeg", "-s", "formatOptions", "80", "-Z", &max_side.to_string()])
@@ -263,4 +222,48 @@ fn system_thumbnail(p: &Path, max_side: u32) -> Option<tidy_judge::Image> {
     }
     let img = image::load_from_memory(&data).ok()?;
     encode_jpeg(&img.thumbnail(max_side, max_side).to_rgb8())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal little-endian TIFF with IFD0 → ExifIFD → DateTimeOriginal.
+    fn tiff_with_date(date: &str) -> Vec<u8> {
+        let mut t = b"II*\0".to_vec();
+        t.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at 8
+        // IFD0: 1 entry (ExifIFD pointer)
+        t.extend_from_slice(&1u16.to_le_bytes());
+        t.extend_from_slice(&0x8769u16.to_le_bytes());
+        t.extend_from_slice(&4u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&26u32.to_le_bytes()); // exif ifd at 26
+        t.extend_from_slice(&0u32.to_le_bytes());
+        // Exif IFD at 26: 1 entry DateTimeOriginal, ASCII, 20 bytes at 44
+        t.extend_from_slice(&1u16.to_le_bytes());
+        t.extend_from_slice(&0x9003u16.to_le_bytes());
+        t.extend_from_slice(&2u16.to_le_bytes());
+        t.extend_from_slice(&20u32.to_le_bytes());
+        t.extend_from_slice(&44u32.to_le_bytes());
+        t.extend_from_slice(&0u32.to_le_bytes());
+        t.extend_from_slice(date.as_bytes());
+        t.push(0);
+        t
+    }
+
+    #[test]
+    fn exif_in_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE1, 0, 0];
+        jpg.extend_from_slice(b"Exif\0\0");
+        jpg.extend_from_slice(&tiff_with_date("2023:07:14 18:30:05"));
+        jpg.extend_from_slice(&[0xFF, 0xD9]);
+        let p = dir.path().join("a.jpg");
+        std::fs::write(&p, &jpg).unwrap();
+        let ts = taken_at(&p).unwrap();
+        assert_eq!(crate::items::ymd(ts), "2023-07-14");
+        assert_eq!(parse_exif_datetime("2024:02:29 00:00:00").map(crate::items::ymd), Some("2024-02-29".into()));
+        std::fs::write(&p, b"not an image").unwrap();
+        assert!(taken_at(&p).is_none());
+    }
 }

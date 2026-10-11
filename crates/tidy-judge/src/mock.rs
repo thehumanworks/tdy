@@ -19,7 +19,28 @@ impl Mock {
 fn words(s: &str) -> HashSet<String> {
     s.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3 && !matches!(*w, "the" | "and" | "does" | "item" | "that" | "this" | "with" | "for" | "from" | "are" | "can" | "any" | "match" | "picture" | "file" | "folder"))
+        .filter(|w| {
+            w.len() >= 3
+                && !matches!(
+                    *w,
+                    "the"
+                        | "and"
+                        | "does"
+                        | "item"
+                        | "that"
+                        | "this"
+                        | "with"
+                        | "for"
+                        | "from"
+                        | "are"
+                        | "can"
+                        | "any"
+                        | "match"
+                        | "picture"
+                        | "file"
+                        | "folder"
+                )
+        })
         .map(|w| w.trim_end_matches('s').to_string())
         .collect()
 }
@@ -41,8 +62,16 @@ impl Judge for Mock {
             let a = match &q.kind {
                 QKind::Predicate => Answer::Predicate { p: (0.02 + overlap * 0.96).min(0.98) },
                 QKind::Choice { options } => {
-                    let pick = options.iter().find(|(v, _)| text.contains(&v.to_lowercase())).or_else(|| options.last()).map(|o| o.0.clone()).unwrap_or_default();
-                    let probs = options.iter().map(|(v, _)| (v.clone(), if *v == pick { 0.9 } else { 0.1 / options.len().max(1) as f64 })).collect();
+                    let pick = options
+                        .iter()
+                        .find(|(v, _)| text.contains(&v.to_lowercase()))
+                        .or_else(|| options.last())
+                        .map(|o| o.0.clone())
+                        .unwrap_or_default();
+                    let probs = options
+                        .iter()
+                        .map(|(v, _)| (v.clone(), if *v == pick { 0.9 } else { 0.1 / options.len().max(1) as f64 }))
+                        .collect();
                     Answer::Choice { choice: pick, probs, confidence: Some(0.8) }
                 }
                 QKind::Score { levels } => {

@@ -79,7 +79,8 @@ fn kind_name(ext: &str) -> &'static str {
 pub struct CompiledFilter {
     pub kind: Option<String>,
     pub ext: Vec<String>,
-    pub name: Option<String>,
+    /// Lower-cased globs; any may match.
+    pub name: Vec<String>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub older_than: Option<i64>,
@@ -92,7 +93,7 @@ impl CompiledFilter {
         CompiledFilter {
             kind: f.kind.clone(),
             ext: f.ext.iter().map(|e| e.trim_start_matches('.').to_lowercase()).collect(),
-            name: f.name.clone(),
+            name: f.name.iter().map(|g| g.to_lowercase()).collect(),
             min_size: f.min_size.as_deref().and_then(parse_bytes),
             max_size: f.max_size.as_deref().and_then(parse_bytes),
             older_than: f.older_than.as_deref().and_then(parse_duration),
@@ -102,23 +103,34 @@ impl CompiledFilter {
     }
 
     pub fn wants_dirs(&self) -> bool {
-        self.kind.as_deref() == Some("dir")
+        matches!(self.kind.as_deref(), Some("dir" | "any"))
     }
 
-    pub fn matches(&self, it: &Item, now: i64) -> bool {
+    /// Name/extension/kind checks only (no size or age) — for items known
+    /// only by path, such as labels.
+    pub fn matches_name(&self, it: &Item) -> bool {
         match self.kind.as_deref() {
             Some("dir") if !it.is_dir => return false,
             Some("file") if it.is_dir => return false,
-            Some(k) if k != "dir" && k != "file" && it.kind() != k => return false,
+            Some("any") | Some("dir") | Some("file") => {}
+            Some(k) if it.kind() != k => return false,
             None if it.is_dir => return false,
             _ => {}
         }
         if !self.ext.is_empty() && !self.ext.contains(&it.ext()) {
             return false;
         }
-        if let Some(g) = &self.name
-            && !glob_match(&g.to_lowercase(), &it.name().to_lowercase())
-        {
+        if !self.name.is_empty() {
+            let n = it.name().to_lowercase();
+            if !self.name.iter().any(|g| glob_match(g, &n)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn matches(&self, it: &Item, now: i64) -> bool {
+        if !self.matches_name(it) {
             return false;
         }
         if self.min_size.is_some_and(|m| it.logical < m) || self.max_size.is_some_and(|m| it.logical > m) {

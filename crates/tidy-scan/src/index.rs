@@ -319,7 +319,7 @@ impl Index {
             cands.select_nth_unstable_by(over - 1, |a, b| b.0.cmp(&a.0));
             cands.truncate(over);
         }
-        cands.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        cands.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
         let mut chosen_dirs = rustc_hash::FxHashSet::default();
         let mut chosen_files: rustc_hash::FxHashMap<u32, Vec<u32>> = Default::default();
         let mut count = 0;
@@ -389,7 +389,7 @@ impl Index {
         if let Some(fs) = files.get(&id) {
             kids.extend(fs.iter().map(|&fi| (self.top_files[fi as usize].size(k), false, fi)));
         }
-        kids.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        kids.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
         for (sz, is_dir, i) in kids {
             if is_dir {
                 self.render(i, depth + 1, k, total, dirs, files, out);
@@ -415,7 +415,7 @@ impl Index {
             v.select_nth_unstable_by(n, |a, b| b.1.cmp(&a.1));
             v.truncate(n);
         }
-        v.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        v.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
         v
     }
 

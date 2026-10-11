@@ -42,6 +42,8 @@ enum Cmd {
     Purge(plan_cmds::PurgeCmd),
     /// List built-in detectors.
     Detectors,
+    /// List built-in rule presets, or print one to copy and adapt.
+    Presets(plan_cmds::PresetsCmd),
     /// Write an example policy to ~/.config/tidy/policy.toml.
     Init(plan_cmds::InitCmd),
     /// Find duplicate files; --plan dedupes them with copy-on-write clones.
@@ -91,6 +93,7 @@ fn main() {
         Cmd::Explain(c) => plan_cmds::cmd_explain(c),
         Cmd::Purge(c) => plan_cmds::cmd_purge(c),
         Cmd::Detectors => plan_cmds::cmd_detectors(),
+        Cmd::Presets(c) => plan_cmds::cmd_presets(c),
         Cmd::Init(c) => plan_cmds::cmd_init(c),
         Cmd::Dupes(c) => space_cmds::cmd_dupes(c),
         Cmd::Archive(c) => space_cmds::cmd_archive(c),

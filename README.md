@@ -45,7 +45,8 @@ tidy undo                      # reverse what can be reversed
 | `archive [--transparent]` | Cold, compressible folders → `.tar.zst` (original quarantined) or APFS/btrfs compression |
 | `watch` | Watch rule scopes; judge new files once they settle; autonomous mode applies right away |
 | `init` | Write an example policy to `~/.config/tidy/policy.toml` |
-| `policy check`, `policy test` | Validate the policy; run `policy.tests.toml` cases through the judge |
+| `presets [NAME]` | List built-in rule presets (● = enabled), or print one to copy and adapt |
+| `policy check`, `policy test` | Validate the policy; run `policy.tests.toml` cases, plus enabled presets' own cases, through the judge |
 | `judge ping`, `judge ask` | Talk to the configured models directly |
 | `calibrate` | Label sample items; fit per-rule thresholds for the current judge |
 | `bench judges` | Agreement, p50/p95 latency and cost of each backend on your labels |
@@ -60,6 +61,7 @@ tidy undo                      # reverse what can be reversed
 mode = "manual"            # "autonomous": entries the policy is sure about are pre-approved
 min_age = "7d"             # removals never touch anything changed more recently
 protect = ["~/Documents/Taxes"]
+presets = ["screenshots", "archive-leftovers"]   # built-in rule packs, see below
 
 [detectors]                # deterministic artifact/cache cleanup (L1)
 min_size = "10MB"
@@ -100,9 +102,11 @@ when.any = ["a business document"]
 to = { pick_from = "~/Documents/*" }    # the judge chooses an existing folder (or none)
 ```
 
-- **Actions:** `keep`, `delete`, `trash`, `quarantine`, `move`, `copy`, `rename` (`name = "{exif.date:%Y-%m-%d} {stem}.{ext}"`), `tag` (`tags = [...]`; Finder tags on macOS, `user.xdg.tags` on Linux), `archive`, `compress`.
-- **Filters:** `kind` (file, dir, image, video, audio, document, archive, installer, code), `ext`, `name` (glob), `min_size`, `max_size`, `older_than`, `newer_than`, `depth`.
+- **Actions:** `keep` (`protects = "removal"` vetoes only removals, so organising rules still apply), `delete`, `trash`, `quarantine`, `move`, `copy`, `rename` (`name = "{exif.date:%Y-%m-%d} {stem}.{ext}"`), `tag` (`tags = [...]`; Finder tags on macOS, `user.xdg.tags` on Linux), `archive`, `compress`.
+- **Filters:** `kind` (file, dir, any, image, video, audio, document, archive, installer, code), `ext`, `name` (a glob or a list of globs), `min_size`, `max_size`, `older_than`, `newer_than`, `depth`.
 - **Criteria:** `when.any`, `when.all` and `when.none`. A rule with no `when` is deterministic and needs no model.
+- **Checks:** `check = "extracted-sibling"` runs a code check before a rule applies, and again at apply time. It holds when the folder next to a `.zip` has every file in it with identical content (size and CRC-32).
+- **Review:** `always_review = true` marks a rule's entries uncertain, so they are never pre-approved.
 - **Templates:** `{mtime:%Y}`, `{exif.date:%Y-%m}`, `{name}`, `{stem}`, `{ext}`, `{kind}`, `{choice}`.
 
 **How rules combine:**
@@ -114,7 +118,7 @@ to = { pick_from = "~/Documents/*" }    # the judge chooses an existing folder (
 
 **Thresholds:** the defaults are 0.8, and 0.15 for keep rules. `tidy calibrate` fits them per rule and per judge to a target precision; the result is stored in `~/.config/tidy/calibration.json`.
 
-**Tests for your policy** live in `~/.config/tidy/policy.tests.toml`. Run them with `tidy policy test` (answers are cached, so re-runs are free):
+**Tests for your policy** live in `~/.config/tidy/policy.tests.toml`. Run them with `tidy policy test` (answers are cached, so re-runs are free). `expect` takes a rule id, `none`, `keep` (any keep rule) or a list of these:
 
 ```toml
 [[case]]
@@ -122,6 +126,23 @@ name = "tax return is protected"
 item = { name = "2024-tax-return.pdf", folder = "~/Downloads", size = "2MB", age = "400d" }
 expect = "protect.finance"
 ```
+
+### Presets
+
+Built-in rule packs. All are off until you list them in `presets = [...]`.
+
+| Preset | Action | Model | What it does |
+|---|---|---|---|
+| `installers` | trash | yes | Installers and disk images in `~/Downloads`, older than 30 days and ≥ 5 MB, that can be downloaded again |
+| `screenshots` | move | no | Screenshots on the Desktop or in Downloads → `~/Pictures/Screenshots/<yyyy-mm>` |
+| `stale-downloads` | quarantine | yes | Top-level `~/Downloads` items untouched for a year that look like one-off downloads; always marked uncertain |
+| `archive-leftovers` | trash | no | A `.zip` whose extracted folder next to it holds identical copies of every file |
+| `protect.personal` | keep (removals) | yes | Finance, legal and identity papers, medical records, personal photos and videos, and your own work are never removed. Moves and tags still apply. |
+
+- **Overriding:** a rule of yours with the same `id` replaces the preset's rule. `tidy presets <name>` prints a preset's TOML to start from.
+- **Tests:** each enabled preset adds its own cases to `tidy policy test`, unless you replaced its rule.
+- **`protect.personal`** is off by default. It only asks the model about items a lossy removal rule would touch, so it adds no calls for moves, and none for `archive-leftovers` (whose check proves nothing is lost).
+- **Without a judge:** model-decided rules are skipped with a warning. Deterministic presets (`screenshots`, `archive-leftovers`) still work, and keep rules that can't be answered protect the item.
 
 ## Safety model
 

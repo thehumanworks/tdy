@@ -68,7 +68,8 @@ pub fn cmd_watch(c: WatchCmd) -> Result<()> {
     let rules = l2::compile(&policy, &roots, built.as_ref().map(|b| b.id.as_str()), &calib);
     if roots.is_empty() {
         let mut set = HashSet::new();
-        for r in &rules {
+        // Keep rules veto inside other rules' scopes; they never need watching.
+        for r in rules.iter().filter(|r| !r.is_keep()) {
             for s in &r.scopes {
                 if set.insert(s.clone()) {
                     roots.push(s.clone());
@@ -159,6 +160,9 @@ pub fn cmd_watch(c: WatchCmd) -> Result<()> {
                 continue;
             }
         };
+        if run.unjudged > 0 {
+            eprintln!("{}", ui::yellow(&crate::judge_cmds::unjudged_warning(run.unjudged, &policy)));
+        }
         let new = l2::entries(&run, policy.mode, built.as_ref().map(|b| b.id.as_str()), &mut taken);
         for o in &run.outcomes {
             if let l2::OutcomeKind::Kept { rule, p } = &o.kind {

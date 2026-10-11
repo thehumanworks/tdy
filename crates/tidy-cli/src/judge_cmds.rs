@@ -153,8 +153,21 @@ pub fn add_policy_entries(planned: &mut Planned, policy: &Policy, guards: &Guard
     if !errors.is_empty() {
         eprintln!("{}", ui::yellow(&format!("{} item(s) could not be judged: {}", errors.len(), errors[0])));
     }
+    if run.unjudged > 0 {
+        eprintln!("{}", ui::yellow(&unjudged_warning(run.unjudged, policy)));
+    }
     planned.plan.entries.extend(es);
     Ok(())
+}
+
+/// Explain what happens to rules that need a judge when none is configured.
+pub fn unjudged_warning(n: usize, policy: &Policy) -> String {
+    let keeps: Vec<&str> = policy.rules.iter().filter(|r| r.action == "keep" && !r.when.is_empty()).map(|r| r.id.as_str()).collect();
+    let mut s = format!("{n} item(s) need a decision model but no [judge] is configured: model-decided rules were skipped");
+    if !keeps.is_empty() {
+        s.push_str(&format!(" and {} kept them to be safe", keeps.join(", ")));
+    }
+    s
 }
 
 pub fn evidence_summary(v: &serde_json::Value) -> String {
@@ -188,7 +201,7 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
     let rules = l2::compile(policy, &[p.parent().unwrap_or(p).to_path_buf()], built.as_ref().map(|b| b.id.as_str()), &calib);
     let now = fmt::now_secs();
     let it = item_for(p)?;
-    let app: Vec<&CompiledRule> = rules.iter().filter(|r| r.applies(&it, now)).collect();
+    let app: Vec<&CompiledRule> = l2::prune(rules.iter().filter(|r| r.applies(&it, now)).collect());
     if app.is_empty() {
         println!("  L2 rules     {}", ui::dim("none apply (scope/filter)"));
         return Ok(());
@@ -389,8 +402,10 @@ struct TestCase {
     /// Or a synthetic item.
     #[serde(default)]
     item: Option<SynthItem>,
-    /// Rule id that must win, "none", or "keep" (any keep rule).
-    expect: String,
+    /// Rule id that must win, "none", or "keep" (any keep rule); a list
+    /// accepts any of them.
+    #[serde(deserialize_with = "tidy_rules::policy::one_or_many")]
+    expect: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -423,45 +438,82 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                 display_path(&path),
                 ui::dim(&format!("{} · mode {:?} · {} rules", hash.unwrap_or_default(), pol.mode, pol.rules.len()))
             );
+            if !pol.presets.is_empty() {
+                println!("  {}", ui::dim(&format!("presets: {}", pol.presets.join(", "))));
+            }
             let calib = Calibration::load();
-            let jid = build_judge(&pol, true).ok().flatten().map(|b| b.id);
+            let built = build_judge(&pol, true);
+            let jid = built.as_ref().ok().and_then(|b| b.as_ref()).map(|b| b.id.clone());
             let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], jid.as_deref(), &calib);
             for r in &rules {
-                let src = if r.rule.threshold.is_some() {
+                let tau = if r.deterministic() && !r.is_keep() { "τ –".to_string() } else { format!("τ={:.2}", r.threshold) };
+                let calibrated = jid.as_deref().and_then(|j| calib.get(j, &r.rule.id)).is_some();
+                let src = if r.deterministic() && !r.is_keep() {
+                    "no model"
+                } else if r.rule.threshold.is_some() && r.rule.preset.is_none() {
                     "explicit"
-                } else if jid.as_deref().and_then(|j| calib.get(j, &r.rule.id)).is_some() {
+                } else if calibrated {
                     "calibrated"
+                } else if r.rule.threshold.is_some() {
+                    "preset"
                 } else {
                     "default"
                 };
                 let scopes: Vec<String> = r.scopes.iter().map(|s| display_path(s)).collect();
                 println!(
-                    "  {:<20} {:<10} τ={:.2} ({src})  {}  {}",
+                    "  {:<20} {:<10} {tau} ({src})  {}  {}",
                     r.rule.id,
                     r.rule.action,
-                    r.threshold,
                     if scopes.is_empty() { ui::yellow("scope missing!") } else { scopes.join(", ") },
                     ui::dim(&format!(
-                        "{} criteria{}",
+                        "{} criteria{}{}{}",
                         r.rule.when.any.len() + r.rule.when.all.len() + r.rule.when.none.len(),
-                        if r.deterministic() { " · deterministic" } else { "" }
+                        if r.deterministic() { " · deterministic" } else { "" },
+                        r.rule.check.as_deref().map(|c| format!(" · check {c}")).unwrap_or_default(),
+                        r.rule.preset.as_deref().map(|p| format!(" · preset {p}")).unwrap_or_default()
                     ))
                 );
             }
-            if let Some(j) = jid {
-                println!("{}", ui::dim(&format!("judge {j}")));
+            let judged = rules.iter().any(|r| !r.deterministic());
+            match built {
+                Ok(Some(b)) => println!("{}", ui::dim(&format!("judge {}", b.id))),
+                Ok(None) if judged => println!(
+                    "{}",
+                    ui::yellow("no [judge] configured: model-decided rules will be skipped, and keep rules protect everything in scope")
+                ),
+                Ok(None) => {}
+                Err(e) => println!("{}", ui::yellow(&format!("judge unavailable: {e:#}"))),
             }
             Ok(())
         }
         PolicyCmd::Test { policy, tests, no_cache } => {
             let (pol, _, ppath) = crate::plan_cmds::load_policy(policy.as_deref())?;
             let tpath = match (tests, ppath) {
-                (Some(t), _) => t,
-                (None, Some(p)) => p.with_extension("tests.toml"),
+                (Some(t), _) => Some(t),
+                (None, Some(p)) => Some(p.with_extension("tests.toml")).filter(|t| t.exists()),
                 (None, None) => bail!("no policy file; pass --policy"),
             };
-            let tf: TestFile = toml::from_str(&std::fs::read_to_string(&tpath).with_context(|| format!("reading {}", tpath.display()))?)?;
+            let mut cases: Vec<TestCase> = match &tpath {
+                Some(t) => {
+                    toml::from_str::<TestFile>(&std::fs::read_to_string(t).with_context(|| format!("reading {}", t.display()))?)?.cases
+                }
+                None => vec![],
+            };
+            // Enabled presets bring their own cases, unless a user rule replaced theirs.
+            for name in &pol.presets {
+                let Some(p) = tidy_rules::presets::get(name) else { continue };
+                let intact = p.rules()?.iter().all(|r| pol.rules.iter().any(|u| u.id == r.id && u.preset.as_deref() == Some(name)));
+                if intact && !p.tests.is_empty() {
+                    cases.extend(toml::from_str::<TestFile>(p.tests).with_context(|| format!("preset {name} tests"))?.cases);
+                }
+            }
+            if cases.is_empty() {
+                bail!("no test cases: add [[case]] entries to {}", tpath.map(|t| display_path(&t)).unwrap_or("<policy>.tests.toml".into()));
+            }
             let built = build_judge(&pol, no_cache)?;
+            if built.is_none() && pol.rules.iter().any(|r| !r.when.is_empty()) {
+                eprintln!("{}", ui::yellow("no [judge] configured: model-decided rules stay silent and keep rules protect everything"));
+            }
             let calib = Calibration::load();
             let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], built.as_ref().map(|b| b.id.as_str()), &calib);
             let media = built.as_ref().map(|b| l2::Media::load(&pol, b.judge.caps()));
@@ -469,7 +521,7 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
             let guards = Guards::new(tidy_rules::GuardConfig { min_age: 0, settle: 0, ..Default::default() });
             let now = fmt::now_secs();
             let mut failed = 0;
-            for (i, case) in tf.cases.iter().enumerate() {
+            for (i, case) in cases.iter().enumerate() {
                 let label = case.name.clone().unwrap_or_else(|| format!("case {}", i + 1));
                 let (it, text) = match (&case.path, &case.item) {
                     (Some(p), _) => {
@@ -480,6 +532,8 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                     (None, Some(s)) => synth(s, now),
                     (None, None) => bail!("{label}: needs `path` or `item`"),
                 };
+                // Unpruned: a case may ask whether a keep rule protects an item
+                // even when no action rule would touch it.
                 let app: Vec<&CompiledRule> = rules.iter().filter(|r| applies_lenient(r, &it, now)).collect();
                 let req = l2::build_request_text(&pol, text, &it, &app, media.as_ref());
                 let resp = match &built {
@@ -494,16 +548,22 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                     }
                     _ => "none".into(),
                 };
-                let ok = got == case.expect || (case.expect == "keep" && matches!(kind, OutcomeKind::Kept { .. }));
+                let ok = case.expect.iter().any(|e| *e == got || (e == "keep" && matches!(kind, OutcomeKind::Kept { .. })));
                 let probs = ps.iter().map(|(r, p)| format!("{r} {p:.2}")).collect::<Vec<_>>().join(", ");
                 if ok {
                     println!("{} {label}  {}", ui::green("✓"), ui::dim(&format!("→ {got}  [{probs}]")));
                 } else {
                     failed += 1;
-                    println!("{} {label}  expected {}, got {}  {}", ui::red("✗"), case.expect, got, ui::dim(&format!("[{probs}]")));
+                    println!(
+                        "{} {label}  expected {}, got {}  {}",
+                        ui::red("✗"),
+                        case.expect.join(" or "),
+                        got,
+                        ui::dim(&format!("[{probs}]"))
+                    );
                 }
             }
-            println!("{} passed, {} failed", tf.cases.len() - failed, failed);
+            println!("{} passed, {} failed", cases.len() - failed, failed);
             if failed > 0 {
                 std::process::exit(1);
             }
@@ -645,23 +705,7 @@ fn label_applies(r: &CompiledRule, path: &Path) -> bool {
         return false;
     }
     let it = Item { path: path.to_path_buf(), is_dir: false, logical: 0, alloc: 0, mtime: 0, flags: 0, depth: 1, dir: None };
-    let f = &r.filter;
-    if let Some(k) = f.kind.as_deref()
-        && k != "file"
-        && k != "dir"
-        && it.kind() != k
-    {
-        return false;
-    }
-    if !f.ext.is_empty() && !f.ext.contains(&it.ext()) {
-        return false;
-    }
-    if let Some(g) = &f.name
-        && !items::glob_match(&g.to_lowercase(), &it.name().to_lowercase())
-    {
-        return false;
-    }
-    true
+    r.filter.matches_name(&it)
 }
 
 fn fit_and_save(pol: &Policy, rules: &[CompiledRule], built: &BuiltJudge, labels: &[Label], target: f64) -> Result<()> {

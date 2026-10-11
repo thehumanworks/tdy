@@ -55,6 +55,7 @@ otherwise                                                 → ASK
 
 ```toml
 mode = "manual"            # or "autonomous": entries are written pre-approved
+presets = ["screenshots"]  # built-in rule packs, all off by default
 
 [judge]
 default = "luna"
@@ -147,6 +148,10 @@ Decisions made while building, beyond the spec above:
   - Tags accumulate.
   - A model-decided `delete` is downgraded to `trash` unless `safety.regenerable` ≥ 0.8 and `safety.loss` ≤ 1 (Minor). A loss ≥ 2.5, or no loss answer, marks the entry uncertain.
 - **Overlaps.** L1 entries win over L2 entries at or inside the same path.
+- **Presets.** Built-in rule packs compiled into the binary (`installers`, `screenshots`, `stale-downloads`, `archive-leftovers`, `protect.personal`). All are off unless listed in `presets = [...]`. A user rule with the same id replaces the preset's rule. Each preset carries its own `policy test` cases, which run while it is enabled and unmodified. Calibration overrides a preset's threshold; a user's explicit threshold overrides calibration.
+- **Removal-only keep rules.** `protects = "removal"` vetoes delete, trash, quarantine and archive, but not move, rename, copy or tag. Such a rule is pruned from an item's request unless a lossy removal rule applies too, so organising-only items cost no extra tokens.
+- **Rule checks.** `check = "extracted-sibling"` is a code predicate (zip central directory vs. the extracted folder: size + CRC-32), evaluated at plan time and again at apply time. Removals backed by a check that proves nothing is lost are exempt from removal-only keep rules, never from full keep rules.
+- **No judge configured.** Model-decided rules are skipped with a warning rather than failing the plan; deterministic rules still run, and unanswered keep rules still protect.
 - **Decision cache.** Keyed by judge id and a digest of the request (evidence text, image hashes, questions). Rewording a criterion only re-asks the affected items.
 - **Cascade.** A later stage re-asks whenever any predicate lands in (0.2, 0.8) or is refused. The band is configurable.
 - **Evidence.** Metadata only by default: name, home-relative path, size, age, provenance xattrs (`kMDItemWhereFroms`, quarantine agent, last-used date; `user.xdg.origin.url` on Linux). `content = true` adds a 2 KB text excerpt or a 512 px JPEG thumbnail. Subject reference photos are attached when a criterion mentions `{name}`.

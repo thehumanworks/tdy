@@ -182,27 +182,27 @@ pub fn mount_points() -> Vec<PathBuf> {
     {
         // /proc/self/mounts: "dev mountpoint fstype opts 0 0", octal-escaped.
         let Ok(text) = std::fs::read_to_string("/proc/self/mounts") else { return vec![] };
-        return text
-            .lines()
+        text.lines()
             .filter_map(|l| l.split(' ').nth(1))
             .map(|m| {
                 let mut out = Vec::new();
                 let b = m.as_bytes();
                 let mut i = 0;
                 while i < b.len() {
-                    if b[i] == b'\\' && i + 3 < b.len() {
-                        if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 4]).unwrap_or("x"), 8) {
-                            out.push(v);
-                            i += 4;
-                            continue;
-                        }
+                    if b[i] == b'\\'
+                        && i + 3 < b.len()
+                        && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 4]).unwrap_or("x"), 8)
+                    {
+                        out.push(v);
+                        i += 4;
+                        continue;
                     }
                     out.push(b[i]);
                     i += 1;
                 }
                 tidy_scan::path::bytes_to_path(&out)
             })
-            .collect();
+            .collect()
     }
     #[cfg(target_os = "macos")]
     {

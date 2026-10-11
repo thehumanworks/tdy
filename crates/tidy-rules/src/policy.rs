@@ -29,6 +29,10 @@ pub struct Policy {
     pub judge: JudgeConfig,
     #[serde(default)]
     pub subjects: BTreeMap<String, Subject>,
+    /// Built-in rule packs to switch on (see `tidy presets`). Rules you
+    /// define with the same id override the preset's version.
+    #[serde(default)]
+    pub presets: Vec<String>,
     #[serde(default, rename = "rule")]
     pub rules: Vec<Rule>,
 }
@@ -124,6 +128,20 @@ pub struct Rule {
     /// Template for `rename` (e.g. "{exif.date:%Y-%m-%d} {stem}.{ext}").
     #[serde(default)]
     pub name: Option<String>,
+    /// Keep rules only: what they protect against — "all" actions (default)
+    /// or only "removal" (delete, trash, quarantine, archive), so organising
+    /// rules can still move and tag the files.
+    #[serde(default)]
+    pub protects: Option<String>,
+    /// A built-in check evaluated in code, e.g. "extracted-sibling".
+    #[serde(default)]
+    pub check: Option<String>,
+    /// Never auto-approve; entries are always marked for careful review.
+    #[serde(default)]
+    pub always_review: bool,
+    /// Set when the rule comes from a preset (not part of the file format).
+    #[serde(skip)]
+    pub preset: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -134,9 +152,9 @@ pub struct Filter {
     pub kind: Option<String>,
     #[serde(default)]
     pub ext: Vec<String>,
-    /// Glob on the file name (`*`, `?`).
-    #[serde(default)]
-    pub name: Option<String>,
+    /// Glob(s) on the file name (`*`, `?`): a string or a list (any matches).
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub name: Vec<String>,
     #[serde(default)]
     pub min_size: Option<String>,
     #[serde(default)]
@@ -183,6 +201,19 @@ pub struct To {
     pub fallback: Option<String>,
 }
 
+pub fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
+}
+
 pub fn default_path() -> PathBuf {
     if let Some(p) = std::env::var_os("TIDY_POLICY") {
         return PathBuf::from(p);
@@ -193,7 +224,8 @@ pub fn default_path() -> PathBuf {
 impl Policy {
     pub fn load(path: &Path) -> Result<(Policy, String)> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading policy {}", path.display()))?;
-        let p: Policy = toml::from_str(&text).with_context(|| format!("parsing policy {}", path.display()))?;
+        let mut p: Policy = toml::from_str(&text).with_context(|| format!("parsing policy {}", path.display()))?;
+        p.expand_presets()?;
         p.validate()?;
         let hash = blake3::hash(text.as_bytes()).to_hex()[..12].to_string();
         Ok((p, hash))
@@ -210,6 +242,32 @@ impl Policy {
         } else {
             Ok((Policy::default(), None, None))
         }
+    }
+
+    /// Merge enabled presets into `rules`: your rules first (in file order),
+    /// then each preset's rules in the order the presets are listed. A rule
+    /// you define with a preset rule's id replaces it.
+    pub fn expand_presets(&mut self) -> Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for name in self.presets.clone() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let preset = crate::presets::get(&name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown preset `{name}` (available: {})",
+                    crate::presets::ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
+                )
+            })?;
+            for mut r in preset.rules()? {
+                if self.rules.iter().any(|u| u.id == r.id) {
+                    continue; // overridden by the user
+                }
+                r.preset = Some(name.clone());
+                self.rules.push(r);
+            }
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -335,6 +393,16 @@ mode = "manual"          # "autonomous" writes plan entries pre-approved
 min_age = "7d"           # never touch anything modified more recently
 protect = ["~/Documents/Taxes"]
 
+# Built-in rule packs, all off until listed here. `tidy presets` describes
+# them; `tidy presets <name>` prints one so you can copy and adapt it (a rule
+# of yours with the same id replaces the preset's).
+#   "installers"         trash old installers and disk images in ~/Downloads
+#   "screenshots"        file screenshots into ~/Pictures/Screenshots/<yyyy-mm>
+#   "stale-downloads"    quarantine year-old one-off downloads (always reviewed)
+#   "archive-leftovers"  trash .zip files already extracted next to them
+#   "protect.personal"   never remove personal papers, photos, videos or your own work
+presets = []
+
 [detectors]              # deterministic build-artifact/cache cleanup (L1)
 min_size = "10MB"
 action = "delete"        # or "trash"
@@ -364,13 +432,6 @@ scope = ["~/Downloads", "~/Desktop"]
 when.any = ["Tax returns, invoices, contracts, payslips, bank statements or other finance/legal documents."]
 
 [[rule]]
-id = "installers"
-action = "trash"
-scope = ["~/Downloads"]
-filter = { ext = ["dmg", "pkg", "iso", "msi", "exe", "zip"], older_than = "30d", min_size = "5MB" }
-when.any = ["An application installer or disk image (such as a .dmg, .pkg, .exe or a zipped app) that can simply be downloaded again — not an archive of personal files."]
-
-[[rule]]
 id = "photos.dogs"
 action = "move"
 scope = ["~/Downloads", "~/Desktop"]
@@ -387,8 +448,12 @@ mod tests {
     fn example_parses_and_validates() {
         let p: Policy = toml::from_str(EXAMPLE).unwrap();
         p.validate().unwrap();
-        assert_eq!(p.rules.len(), 3);
-        assert!(p.rules[2].to.as_ref().unwrap().create_if_missing);
+        assert_eq!(p.rules.len(), 2);
+        assert!(p.presets.is_empty(), "presets ship switched off");
+        for pr in crate::presets::ALL {
+            assert!(EXAMPLE.contains(&format!("\"{}\"", pr.name)), "{} missing from the init template", pr.name);
+        }
+        assert!(p.rules[1].to.as_ref().unwrap().create_if_missing);
         let g = p.guard_config();
         assert!(g.destinations.iter().any(|d| d.ends_with("Pictures/Dogs")));
         assert_eq!(subject_refs("picture of {me} next to a dog"), vec!["me"]);

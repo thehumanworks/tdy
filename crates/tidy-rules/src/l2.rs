@@ -57,12 +57,30 @@ impl CompiledRule {
     pub fn deterministic(&self) -> bool {
         self.rule.when.is_empty() && self.rule.to.as_ref().is_none_or(|t| t.pick_from.is_none())
     }
+    /// A removal that a code check proved loses nothing.
+    pub fn lossless(&self) -> bool {
+        self.rule.check.as_deref().is_some_and(|c| crate::checks::LOSSLESS.contains(&c))
+    }
+    /// A removal that removal-only keep rules veto.
+    pub fn lossy_removal(&self) -> bool {
+        self.removal() && !self.lossless()
+    }
+    /// Keep rule that only blocks lossy removals (organising still allowed).
+    pub fn protects_removal_only(&self) -> bool {
+        self.is_keep() && self.rule.protects.as_deref() == Some("removal")
+    }
     pub fn applies(&self, it: &Item, now: i64) -> bool {
         let Some(scope) = self.scopes.iter().find(|s| it.path.starts_with(s) && it.path != **s) else { return false };
         let depth = it.path.strip_prefix(scope).map(|r| r.components().count()).unwrap_or(usize::MAX);
         let mut it2 = it.clone();
         it2.depth = depth;
-        self.filter.matches(&it2, now)
+        if !self.filter.matches(&it2, now) {
+            return false;
+        }
+        match &self.rule.check {
+            Some(c) => crate::checks::passes(c, &it.path),
+            None => true,
+        }
     }
 }
 
@@ -78,7 +96,9 @@ pub fn compile(policy: &Policy, roots: &[PathBuf], judge_id: Option<&str>, calib
         .map(|(idx, r)| {
             let action = if r.action == "keep" { None } else { r.action.parse::<Action>().ok() };
             let calibrated = judge_id.and_then(|j| calib.get(j, &r.id));
-            let threshold = r.threshold.or(calibrated).unwrap_or(if action.is_none() { DEFAULT_KEEP_THRESHOLD } else { DEFAULT_THRESHOLD });
+            // A user's explicit threshold beats calibration; calibration beats a preset's default.
+            let explicit = if r.preset.is_some() { calibrated.or(r.threshold) } else { r.threshold.or(calibrated) };
+            let threshold = explicit.unwrap_or(if action.is_none() { DEFAULT_KEEP_THRESHOLD } else { DEFAULT_THRESHOLD });
             let mut dest_options = Vec::new();
             if let Some(pf) = r.to.as_ref().and_then(|t| t.pick_from.as_ref()) {
                 dest_options = expand_dir_glob(pf);
@@ -88,7 +108,8 @@ pub fn compile(policy: &Policy, roots: &[PathBuf], judge_id: Option<&str>, calib
                 rule: r.clone(),
                 qid: sanitize(&r.id),
                 filter: CompiledFilter::from(&r.filter),
-                scopes: items::scopes(r, roots),
+                // A keep rule without a scope protects everywhere.
+                scopes: if action.is_none() && r.scope.is_empty() { vec![PathBuf::from("/")] } else { items::scopes(r, roots) },
                 action,
                 threshold,
                 dest_options,
@@ -313,6 +334,8 @@ pub struct Proposal {
     pub create_dest: bool,
     pub on_conflict: OnConflict,
     pub mode: Option<Mode>,
+    /// Code check the rule required; re-run before applying.
+    pub check: Option<String>,
 }
 
 /// Decide one item from its answers.
@@ -327,9 +350,15 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
         }
     }
     // keep rules veto first, regardless of order; an unanswered keep rule
-    // (refusal, omitted question, no judge) protects rather than lapses
+    // (refusal, omitted question, no judge) protects rather than lapses.
+    // `protects = "removal"` keep rules only veto removals.
+    let mut keep_removal: Option<(String, Option<f64>)> = None;
     for (r, p) in rules.iter().zip(&probs) {
         if r.is_keep() && (p.is_some_and(|p| p >= r.threshold) || p.is_none()) {
+            if r.protects_removal_only() {
+                keep_removal.get_or_insert((r.rule.id.clone(), *p));
+                continue;
+            }
             return (OutcomeKind::Kept { rule: r.rule.id.clone(), p: *p }, ps);
         }
     }
@@ -346,7 +375,7 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
     let mut best_uncertain: Option<(usize, f64)> = None;
     for (i, (r, p)) in rules.iter().zip(&probs).enumerate() {
         let (Some(_), Some(p)) = (r.action, *p) else { continue };
-        if !r.exclusive() {
+        if !r.exclusive() || (keep_removal.is_some() && r.lossy_removal()) {
             continue;
         }
         if p >= r.threshold {
@@ -365,7 +394,7 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
     if let Some((wi, p, uncertain)) = winner {
         let r = rules[wi];
         let mut action = r.action.unwrap();
-        let mut uncertain = uncertain;
+        let mut uncertain = uncertain || r.rule.always_review;
         let mut note = None;
         if r.removal() && !r.rule.when.is_empty() {
             if action == Action::Delete && !(regenerable.unwrap_or(0.0) >= 0.8 && loss.unwrap_or(3.0) <= 1.0) {
@@ -432,6 +461,7 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
                 create_dest: to.is_some_and(|t| t.create_if_missing),
                 on_conflict: r.rule.on_conflict.unwrap_or_default(),
                 mode: r.rule.mode,
+                check: r.rule.check.clone(),
             });
         }
     }
@@ -464,6 +494,7 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
                 create_dest: false,
                 on_conflict: OnConflict::Skip,
                 mode: None,
+                check: None,
             });
         }
     }
@@ -473,6 +504,9 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
     }
     if let Some((rule, why)) = blocked {
         return (OutcomeKind::Blocked { rule, why }, ps);
+    }
+    if let Some((rule, p)) = keep_removal {
+        return (OutcomeKind::Kept { rule, p }, ps);
     }
     (OutcomeKind::NoRule, ps)
 }
@@ -567,10 +601,45 @@ pub fn strftime(t: i64, f: &str) -> String {
     out
 }
 
+/// Indices of the rules that apply to an item. Keep rules only count when an
+/// action rule applies too, and removal-only keep rules only when a lossy
+/// removal rule does (so organising-only items cost no judge call for them).
+pub fn applicable(rules: &[CompiledRule], it: &Item, now: i64) -> Vec<usize> {
+    let app: Vec<usize> = rules.iter().enumerate().filter(|(_, r)| r.applies(it, now)).map(|(i, _)| i).collect();
+    let ctx = Relevance::of(app.iter().map(|&i| &rules[i]));
+    app.into_iter().filter(|&i| ctx.keeps(&rules[i])).collect()
+}
+
+/// Same pruning as [`applicable`] for an already-filtered rule list.
+pub fn prune(app: Vec<&CompiledRule>) -> Vec<&CompiledRule> {
+    let ctx = Relevance::of(app.iter().copied());
+    app.into_iter().filter(|r| ctx.keeps(r)).collect()
+}
+
+struct Relevance {
+    any_action: bool,
+    any_removal: bool,
+}
+
+impl Relevance {
+    fn of<'a>(app: impl Iterator<Item = &'a CompiledRule>) -> Self {
+        let mut c = Relevance { any_action: false, any_removal: false };
+        for r in app {
+            c.any_action |= !r.is_keep();
+            c.any_removal |= r.lossy_removal();
+        }
+        c
+    }
+    fn keeps(&self, r: &CompiledRule) -> bool {
+        !r.is_keep() || (self.any_action && (self.any_removal || !r.protects_removal_only()))
+    }
+}
+
 /// Gather items for all rules: union of each rule's scope listing.
 pub fn collect(rules: &[CompiledRule], now: i64) -> Vec<(Item, Vec<usize>)> {
     let mut by_scope: HashMap<PathBuf, (usize, bool)> = HashMap::new();
-    for r in rules {
+    // Keep rules only apply to items other rules collect; they never drive listing.
+    for r in rules.iter().filter(|r| !r.is_keep()) {
         let depth = r.filter.depth.unwrap_or(if r.filter.wants_dirs() { 1 } else { 64 });
         for s in &r.scopes {
             let e = by_scope.entry(s.clone()).or_insert((0, false));
@@ -594,9 +663,9 @@ pub fn collect(rules: &[CompiledRule], now: i64) -> Vec<(Item, Vec<usize>)> {
                 items::summarize_dir(&mut it);
             }
         }
-        let applicable: Vec<usize> = rules.iter().enumerate().filter(|(_, r)| r.applies(&it, now)).map(|(i, _)| i).collect();
-        if !applicable.is_empty() {
-            out.push((it, applicable));
+        let app = applicable(rules, &it, now);
+        if !app.is_empty() {
+            out.push((it, app));
         }
     }
     out
@@ -605,6 +674,8 @@ pub fn collect(rules: &[CompiledRule], now: i64) -> Vec<(Item, Vec<usize>)> {
 pub struct L2Run {
     pub outcomes: Vec<Outcome>,
     pub requests: usize,
+    /// Items that needed a judge but none was configured.
+    pub unjudged: usize,
     pub cache_hits: usize,
     pub input_tokens: u64,
     pub elapsed_ms: u64,
@@ -646,7 +717,7 @@ pub fn items_for_paths(rules: &[CompiledRule], paths: &[PathBuf], now: i64) -> V
         if it.is_dir {
             items::summarize_dir(&mut it);
         }
-        let app: Vec<usize> = rules.iter().enumerate().filter(|(_, r)| r.applies(&it, now)).map(|(i, _)| i).collect();
+        let app = applicable(rules, &it, now);
         if !app.is_empty() {
             out.push((it, app));
         }
@@ -671,24 +742,25 @@ pub fn run_on(
     // are not worth a paid call.
     let mut reqs = Vec::new();
     let mut req_of: Vec<Option<usize>> = Vec::new();
+    let mut unjudged = 0;
     for (it, app) in &items {
         let rs: Vec<&CompiledRule> = app.iter().map(|&i| &rules[i]).collect();
         let newest = it.dir.as_ref().map(|d| d.newest.max(it.mtime)).unwrap_or(it.mtime);
         let facts = Facts { mtime_max: Some(newest), flags: it.flags, regenerable: false, min_age: None };
         let actionable = rs.iter().any(|r| r.action.is_some_and(|a| guards.check(&it.path, a, &facts, Some(&[])).is_ok()));
         let needs_judge = rs.iter().any(|r| !r.deterministic());
-        if actionable && needs_judge {
+        if actionable && needs_judge && judge.is_some() {
             req_of.push(Some(reqs.len()));
             reqs.push(build_request(policy, it, &rs, now, true, media.as_ref()));
         } else {
+            // Without a judge, judged rules stay silent and keep rules protect.
+            unjudged += usize::from(actionable && needs_judge);
             req_of.push(None);
         }
     }
     let responses: Vec<Result<Response, tidy_judge::JudgeError>> = match judge {
         Some(j) if !reqs.is_empty() => tidy_judge::decide_many(j, &reqs, concurrency, progress),
-        Some(_) => vec![],
-        None if !reqs.is_empty() => anyhow::bail!("policy rules need a judge: add [judge.backends.*] to the policy"),
-        None => vec![],
+        _ => vec![],
     };
     if let Some(Err(e @ (tidy_judge::JudgeError::Auth(_) | tidy_judge::JudgeError::Config(_)))) = responses.first() {
         anyhow::bail!("{e}");
@@ -720,7 +792,14 @@ pub fn run_on(
         let (kind, ps) = decide(&it, &rs, resp.as_ref(), guards, now);
         outcomes.push(Outcome { item: it, kind, rule_p: ps, response: resp });
     }
-    Ok(L2Run { outcomes, requests: reqs.len(), cache_hits: hits, input_tokens: tokens, elapsed_ms: started.elapsed().as_millis() as u64 })
+    Ok(L2Run {
+        outcomes,
+        requests: reqs.len(),
+        unjudged,
+        cache_hits: hits,
+        input_tokens: tokens,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 /// Turn proposals into plan entries.
@@ -739,6 +818,7 @@ pub fn entries(run: &L2Run, mode: Mode, judge_id: Option<&str>, taken: &mut Hash
                 "answers": o.response.as_ref().map(|r| &r.answers),
                 "cached": o.response.as_ref().map(|r| r.cached),
                 "uncertain": p.uncertain,
+                "check": p.check,
             });
             let mut reason = match p.action {
                 Action::Tag => format!("tag {}", p.tags.join(", ")),

@@ -2371,6 +2371,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "crc32fast",
  "image",
  "jpeg-decoder",
  "parking_lot",

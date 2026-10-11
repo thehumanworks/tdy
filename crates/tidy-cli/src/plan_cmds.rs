@@ -363,6 +363,12 @@ pub fn apply_guard_with(cfg: tidy_rules::GuardConfig) -> impl Fn(&tidy_plan::Ent
             min_age: None,
         };
         guards.check(&e.path, e.action, &facts, None).map_err(|b| b.to_string())?;
+        // Rule checks (e.g. "the extracted copy is identical") must still hold.
+        if let Some(c) = e.evidence.as_ref().and_then(|v| v.get("check")).and_then(|c| c.as_str())
+            && !tidy_rules::checks::passes(c, &e.path)
+        {
+            return Err(format!("check `{c}` no longer holds"));
+        }
         if let Some(d) = &e.dest
             && matches!(e.action, Action::Move | Action::Copy | Action::Rename | Action::Archive)
         {
@@ -569,6 +575,44 @@ pub fn cmd_detectors() -> Result<()> {
     for id in tidy_rules::detect::detector_ids() {
         println!("{id}");
     }
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct PresetsCmd {
+    /// Print this preset's rules and test cases (TOML).
+    pub name: Option<String>,
+    #[arg(long)]
+    pub policy: Option<PathBuf>,
+}
+
+pub fn cmd_presets(c: PresetsCmd) -> Result<()> {
+    use tidy_rules::presets;
+    if let Some(n) = c.name {
+        let p = presets::get(&n).with_context(|| {
+            format!("unknown preset `{n}` (available: {})", presets::ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", "))
+        })?;
+        println!("# preset {} — {}", p.name, p.description);
+        println!("# To adapt it, paste the rule into your policy: a rule with the same id replaces the preset's.");
+        println!("{}", p.rules_toml().trim());
+        if !p.tests.trim().is_empty() {
+            println!("\n# Test cases (run by `tidy policy test` while the preset is enabled):");
+            println!("{}", p.tests.trim());
+        }
+        return Ok(());
+    }
+    let enabled = load_policy(c.policy.as_deref()).map(|(p, _, _)| p.presets).unwrap_or_default();
+    for p in presets::ALL {
+        let on = enabled.iter().any(|e| e == p.name);
+        println!(
+            "{} {:<18} {:<14} {}",
+            if on { ui::green("●") } else { ui::dim("○") },
+            p.name,
+            if p.needs_judge { "model" } else { "deterministic" },
+            ui::dim(p.description)
+        );
+    }
+    println!("{}", ui::dim("Enable with `presets = [\"name\", …]` in the policy; `tidy presets <name>` prints one."));
     Ok(())
 }
 

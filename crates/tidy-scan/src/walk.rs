@@ -225,7 +225,7 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
     }
 
     let by = opts.top_by;
-    top_all.sort_unstable_by(|a, b| b.size(by).cmp(&a.size(by)));
+    top_all.sort_unstable_by_key(|b| std::cmp::Reverse(b.size(by)));
     top_all.truncate(opts.top_k);
     stats.files = nodes[0].files;
     stats.dirs = nodes[0].dirs as u64 + 1;

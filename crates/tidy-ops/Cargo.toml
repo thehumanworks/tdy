@@ -1,0 +1,22 @@
+[package]
+name = "tidy-ops"
+description = "Filesystem actions, fingerprints and system probes for Tidy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tidy-scan.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+# Pure-Rust BLAKE3 (no C/asm). Used for cross-target type checks from Linux.
+pure-blake3 = ["blake3/pure"]

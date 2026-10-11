@@ -1,0 +1,17 @@
+[package]
+name = "tidy-cli"
+description = "Tidy: analyse, clean up, compress and organise files on disk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tidy"
+path = "src/main.rs"
+
+[dependencies]
+tidy-scan.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

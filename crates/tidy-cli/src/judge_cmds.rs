@@ -187,7 +187,8 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
         println!("  L2 rules     {}", ui::dim("none apply (scope/filter)"));
         return Ok(());
     }
-    let req = l2::build_request(policy, &it, &app, now, true);
+    let media = built.as_ref().map(|b| l2::Media::load(policy, b.judge.caps()));
+    let req = l2::build_request(policy, &it, &app, now, true, media.as_ref());
     let resp = match &built {
         Some(b) if !req.questions.is_empty() => Some(b.judge.decide(&req)?),
         _ => None,
@@ -421,6 +422,7 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
             let built = build_judge(&pol, no_cache)?;
             let calib = Calibration::load();
             let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], built.as_ref().map(|b| b.id.as_str()), &calib);
+            let media = built.as_ref().map(|b| l2::Media::load(&pol, b.judge.caps()));
             // Guards are not under test here: allow everything.
             let guards = Guards::new(tidy_rules::GuardConfig { min_age: 0, settle: 0, ..Default::default() });
             let now = fmt::now_secs();
@@ -437,7 +439,7 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                     (None, None) => bail!("{label}: needs `path` or `item`"),
                 };
                 let app: Vec<&CompiledRule> = rules.iter().filter(|r| applies_lenient(r, &it, now)).collect();
-                let req = l2::build_request_text(&pol, text, &it, &app);
+                let req = l2::build_request_text(&pol, text, &it, &app, media.as_ref());
                 let resp = match &built {
                     Some(b) if !req.questions.is_empty() => Some(tidy_judge::decide_split(b.judge.as_ref(), &req)?),
                     _ => None,
@@ -538,7 +540,8 @@ pub fn cmd_calibrate(c: CalibrateCmd) -> Result<()> {
         }
         sample.truncate(c.count);
         println!("{} items to label · judge {}", sample.len(), built.id);
-        let reqs: Vec<Request> = sample.iter().map(|(it, app)| l2::build_request(&pol, it, &app.iter().map(|&i| &rules[i]).collect::<Vec<_>>(), now, true)).collect();
+        let media = l2::Media::load(&pol, built.judge.caps());
+        let reqs: Vec<Request> = sample.iter().map(|(it, app)| l2::build_request(&pol, it, &app.iter().map(|&i| &rules[i]).collect::<Vec<_>>(), now, true, Some(&media))).collect();
         let pb = progress_bar("judging");
         let resps = tidy_judge::decide_many(built.judge.as_ref(), &reqs, pol.judge.concurrency.unwrap_or(32), &pb);
         let stdin = std::io::stdin();
@@ -607,13 +610,14 @@ fn label_applies(r: &CompiledRule, path: &Path) -> bool {
 fn fit_and_save(pol: &Policy, rules: &[CompiledRule], built: &BuiltJudge, labels: &[Label], target: f64) -> Result<()> {
     let now = fmt::now_secs();
     let mut scored: std::collections::BTreeMap<String, Vec<(f64, bool)>> = Default::default();
+    let media = l2::Media::load(pol, built.judge.caps());
     for l in labels {
         let it = Item { path: l.path.clone(), is_dir: false, logical: 0, alloc: 0, mtime: now, flags: 0, depth: 1, dir: None };
         let app: Vec<&CompiledRule> = rules.iter().filter(|r| label_applies(r, &l.path) && !r.deterministic()).collect();
         if app.is_empty() {
             continue;
         }
-        let req = l2::build_request_text(pol, l.evidence.clone(), &it, &app);
+        let req = l2::build_request_text(pol, l.evidence.clone(), &it, &app, Some(&media));
         let resp = tidy_judge::decide_split(built.judge.as_ref(), &req)?;
         for r in &app {
             if let Some(p) = l2::rule_probability(r, &resp.answers) {
@@ -686,6 +690,7 @@ pub fn cmd_bench_judges(c: BenchJudgesCmd) -> Result<()> {
         };
         let calib = Calibration::load();
         let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], Some(&j.id()), &calib);
+        let media = l2::Media::load(&pol, j.caps());
         let guards = Guards::new(tidy_rules::GuardConfig { min_age: 0, settle: 0, ..Default::default() });
         let mut cases = Vec::new();
         for l in &labels {
@@ -694,7 +699,7 @@ pub fn cmd_bench_judges(c: BenchJudgesCmd) -> Result<()> {
             if app.is_empty() {
                 continue;
             }
-            cases.push((l, it, l2::build_request_text(&pol, l.evidence.clone(), &Item { path: l.path.clone(), is_dir: false, logical: 0, alloc: 0, mtime: now, flags: 0, depth: 1, dir: None }, &app)));
+            cases.push((l, it, l2::build_request_text(&pol, l.evidence.clone(), &Item { path: l.path.clone(), is_dir: false, logical: 0, alloc: 0, mtime: now, flags: 0, depth: 1, dir: None }, &app, Some(&media))));
         }
         let reqs: Vec<Request> = cases.iter().map(|c| c.2.clone()).collect();
         let resps = tidy_judge::decide_many(j.as_ref(), &reqs, cfg.concurrency.min(16), &|_, _| {});

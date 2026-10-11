@@ -191,7 +191,7 @@ enum TargetErr {
 
 fn resolve_target(e: &Entry, plan_id: &str, reserve: bool) -> std::result::Result<Target, TargetErr> {
     match e.action {
-        Action::Delete => Ok(Target::None),
+        Action::Delete | Action::Tag => Ok(Target::None),
         Action::Trash => trash::trash_slot(&e.path, reserve).map(Target::Trash).map_err(|x| TargetErr::Fail(x.to_string())),
         Action::Quarantine => trash::quarantine_slot(&e.path, plan_id, &e.id, reserve).map(Target::Path).map_err(|x| TargetErr::Fail(x.to_string())),
         Action::Move | Action::Rename | Action::Copy => {
@@ -244,14 +244,26 @@ fn execute(e: &Entry, t: &Target, j: &mut Journal) -> Result<Outcome> {
         }
         (Action::Move | Action::Rename, Target::Path(dst)) => {
             if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
+                out.created = create_dirs(parent)?;
             }
             move_any(&e.path, dst, e, j)?;
             out.now_at = Some(dst.clone());
         }
+        (Action::Tag, _) => {
+            let before = tidy_ops::meta::get_tags(&e.path);
+            let mut after = before.clone();
+            for t in &e.tags {
+                if !after.contains(t) {
+                    after.push(t.clone());
+                }
+            }
+            tidy_ops::meta::set_tags(&e.path, &after)?;
+            out.previous = Some(serde_json::json!(before));
+            out.now_at = Some(e.path.clone());
+        }
         (Action::Copy, Target::Path(dst)) => {
             if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
+                out.created = create_dirs(parent)?;
             }
             copy_verified(&e.path, dst)?;
             out.now_at = Some(dst.clone());
@@ -259,6 +271,22 @@ fn execute(e: &Entry, t: &Target, j: &mut Journal) -> Result<Outcome> {
         (a, _) => return Err(anyhow!("action `{}` is not supported by this version", a.as_str())),
     }
     Ok(out)
+}
+
+/// `create_dir_all`, returning the directories it actually created (outermost first).
+fn create_dirs(p: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut missing = Vec::new();
+    let mut cur = Some(p);
+    while let Some(c) = cur {
+        if exists(c) {
+            break;
+        }
+        missing.push(c.to_path_buf());
+        cur = c.parent();
+    }
+    std::fs::create_dir_all(p)?;
+    missing.reverse();
+    Ok(missing)
 }
 
 /// Rename when on the same volume; otherwise copy → verify → journal
@@ -300,6 +328,7 @@ fn describe(e: &Entry, t: &Target) -> String {
     match t {
         Target::None => format!("{} {}", e.action.as_str(), e.path.display()),
         Target::DuplicateOf(d, _) => format!("{} is identical to {} → quarantine", e.path.display(), d.display()),
+        _ if e.action == Action::Tag => format!("tag {} +{}", e.path.display(), e.tags.join(",")),
         t => format!("{} {} → {}", e.action.as_str(), e.path.display(), t.dst().map(|p| p.display().to_string()).unwrap_or_default()),
     }
 }
@@ -340,6 +369,10 @@ pub fn undo(plan: &mut Plan, only: Option<&HashSet<String>>, on: &mut dyn FnMut(
         let res: Result<()> = (|| {
             match e.action {
                 Action::Copy => remove_tree(&now_at)?,
+                Action::Tag => {
+                    let prev: Vec<String> = e.outcome.as_ref().and_then(|o| o.previous.clone()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+                    tidy_ops::meta::set_tags(&e.path, &prev)?;
+                }
                 _ => {
                     if let Some(parent) = e.path.parent() {
                         std::fs::create_dir_all(parent)?;
@@ -365,6 +398,12 @@ pub fn undo(plan: &mut Plan, only: Option<&HashSet<String>>, on: &mut dyn FnMut(
         let e = &mut plan.entries[i];
         match res {
             Ok(()) => {
+                // Remove directories the apply created, innermost first, if now empty.
+                if let Some(o) = e.outcome.as_ref() {
+                    for d in o.created.iter().rev() {
+                        let _ = std::fs::remove_dir(d);
+                    }
+                }
                 j.log(&e.id, Phase::UndoDone, action, &now_at, Some(&e.path), None)?;
                 e.status = Status::Undone;
                 report.undone += 1;

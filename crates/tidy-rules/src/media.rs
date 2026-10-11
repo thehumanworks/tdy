@@ -138,3 +138,129 @@ mod tests {
         assert!(taken_at(&p).is_none());
     }
 }
+
+// ---- thumbnails ------------------------------------------------------------------
+
+/// EXIF orientation (1..=8) for JPEG/HEIC/TIFF files.
+pub fn orientation(p: &Path) -> Option<u16> {
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut buf = vec![0u8; 128 * 1024];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    let t = find_tiff(&buf)?;
+    let le = t.starts_with(b"II");
+    let u16_at = |o: usize| -> Option<u16> {
+        let s = t.get(o..o + 2)?;
+        Some(if le { u16::from_le_bytes([s[0], s[1]]) } else { u16::from_be_bytes([s[0], s[1]]) })
+    };
+    let u32_at = |o: usize| -> Option<u32> {
+        let s = t.get(o..o + 4)?;
+        Some(if le { u32::from_le_bytes([s[0], s[1], s[2], s[3]]) } else { u32::from_be_bytes([s[0], s[1], s[2], s[3]]) })
+    };
+    let ifd = u32_at(4)? as usize;
+    let n = u16_at(ifd)? as usize;
+    for i in 0..n.min(512) {
+        let e = ifd + 2 + i * 12;
+        if u16_at(e)? == 0x0112 {
+            return u16_at(e + 8);
+        }
+    }
+    None
+}
+
+/// A JPEG thumbnail (longest side ≤ `max_side`) suitable for a vision judge.
+/// JPEGs decode at reduced DCT scale (fast); PNG/WebP/GIF/BMP/TIFF via the
+/// `image` crate; HEIC/RAW via `sips` on macOS.
+pub fn thumbnail(p: &Path, max_side: u32) -> Option<tidy_judge::Image> {
+    let md = std::fs::metadata(p).ok()?;
+    if !md.is_file() || md.len() > 200 * 1024 * 1024 {
+        return None;
+    }
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let img: image::DynamicImage = match ext.as_str() {
+        "jpg" | "jpeg" => decode_jpeg_scaled(p, max_side)?,
+        "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" => image::ImageReader::open(p).ok()?.with_guessed_format().ok()?.decode().ok()?,
+        _ => return system_thumbnail(p, max_side),
+    };
+    let img = match orientation(p).unwrap_or(1) {
+        3 => img.rotate180(),
+        6 => img.rotate90(),
+        8 => img.rotate270(),
+        _ => img,
+    };
+    let img = if img.width().max(img.height()) > max_side { img.thumbnail(max_side, max_side) } else { img };
+    encode_jpeg(&img.to_rgb8())
+}
+
+fn encode_jpeg(rgb: &image::RgbImage) -> Option<tidy_judge::Image> {
+    let mut out = Vec::new();
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80);
+    rgb.write_with_encoder(enc).ok()?;
+    Some(tidy_judge::Image { mime: "image/jpeg".into(), data: out, caption: None })
+}
+
+fn decode_jpeg_scaled(p: &Path, max_side: u32) -> Option<image::DynamicImage> {
+    let f = std::io::BufReader::new(std::fs::File::open(p).ok()?);
+    let mut d = jpeg_decoder::Decoder::new(f);
+    d.read_info().ok()?;
+    let target = (max_side.min(u16::MAX as u32)) as u16;
+    d.scale(target, target).ok()?;
+    let px = d.decode().ok()?;
+    let info = d.info()?;
+    let (w, h) = (info.width as u32, info.height as u32);
+    match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => image::RgbImage::from_raw(w, h, px).map(image::DynamicImage::ImageRgb8),
+        jpeg_decoder::PixelFormat::L8 => image::GrayImage::from_raw(w, h, px).map(image::DynamicImage::ImageLuma8),
+        jpeg_decoder::PixelFormat::CMYK32 => {
+            let rgb: Vec<u8> = px
+                .chunks(4)
+                .flat_map(|c| {
+                    let k = 255 - c[3] as u16;
+                    [((255 - c[0] as u16) * k / 255) as u8, ((255 - c[1] as u16) * k / 255) as u8, ((255 - c[2] as u16) * k / 255) as u8]
+                })
+                .collect();
+            image::RgbImage::from_raw(w, h, rgb).map(image::DynamicImage::ImageRgb8)
+        }
+        _ => None,
+    }
+}
+
+/// HEIC/HEIF/RAW: let the OS render a JPEG (macOS `sips`, Linux `heif-convert`).
+fn system_thumbnail(p: &Path, max_side: u32) -> Option<tidy_judge::Image> {
+    let tmp = std::env::temp_dir().join(format!("tidy-thumb-{}-{}.jpg", std::process::id(), blake3::hash(tidy_scan::path::path_bytes(p)).to_hex()));
+    let ok = if cfg!(target_os = "macos") {
+        std::process::Command::new("sips")
+            .args(["-s", "format", "jpeg", "-s", "formatOptions", "80", "-Z", &max_side.to_string()])
+            .arg(p)
+            .arg("--out")
+            .arg(&tmp)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else {
+        std::process::Command::new("heif-convert")
+            .args(["-q", "80"])
+            .arg(p)
+            .arg(&tmp)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if !ok {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    let data = std::fs::read(&tmp).ok();
+    let _ = std::fs::remove_file(&tmp);
+    // heif-convert does not resize: re-thumbnail through the JPEG path.
+    let data = data?;
+    if cfg!(target_os = "macos") {
+        return Some(tidy_judge::Image { mime: "image/jpeg".into(), data, caption: None });
+    }
+    let img = image::load_from_memory(&data).ok()?;
+    encode_jpeg(&img.thumbnail(max_side, max_side).to_rgb8())
+}

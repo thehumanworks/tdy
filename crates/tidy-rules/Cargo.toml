@@ -16,6 +16,8 @@ toml.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
 blake3.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

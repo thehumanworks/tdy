@@ -199,6 +199,9 @@ pub struct Outcome {
     pub previous: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub freed: u64,
+    /// Directories created to hold the destination (removed on undo if empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created: Vec<PathBuf>,
 }
 
 fn is_zero(v: &u64) -> bool {

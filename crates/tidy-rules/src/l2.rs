@@ -161,13 +161,43 @@ fn criterion_text(policy: &Policy, c: &str) -> String {
     out
 }
 
+/// Images available to requests: the judge's image budget and reference
+/// photos of policy subjects (thumbnailed once).
+#[derive(Default)]
+pub struct Media {
+    pub max_images: usize,
+    pub subjects: BTreeMap<String, Vec<tidy_judge::Image>>,
+}
+
+impl Media {
+    pub fn load(policy: &Policy, caps: tidy_judge::Caps) -> Media {
+        let max_images = if caps.images { caps.max_images } else { 0 };
+        let mut subjects = BTreeMap::new();
+        if max_images > 1 {
+            for (name, s) in &policy.subjects {
+                let imgs: Vec<tidy_judge::Image> = s
+                    .refs
+                    .iter()
+                    .filter_map(|r| crate::media::thumbnail(&tidy_scan::path::expand_tilde(r), 384))
+                    .map(|mut i| {
+                        i.caption = Some(format!("Reference photo of \"{name}\"{}", s.description.as_ref().map(|d| format!(" ({d})")).unwrap_or_default()));
+                        i
+                    })
+                    .collect();
+                subjects.insert(name.clone(), imgs);
+            }
+        }
+        Media { max_images, subjects }
+    }
+}
+
 /// Build the request for one item given the rules that apply to it.
-pub fn build_request(policy: &Policy, it: &Item, rules: &[&CompiledRule], now: i64, redact: bool) -> Request {
-    build_request_text(policy, items::evidence(it, now, redact), it, rules)
+pub fn build_request(policy: &Policy, it: &Item, rules: &[&CompiledRule], now: i64, redact: bool, media: Option<&Media>) -> Request {
+    build_request_text(policy, items::evidence(it, now, redact), it, rules, media)
 }
 
 /// Same, with the evidence text supplied by the caller.
-pub fn build_request_text(policy: &Policy, text: String, it: &Item, rules: &[&CompiledRule]) -> Request {
+pub fn build_request_text(policy: &Policy, text: String, it: &Item, rules: &[&CompiledRule], media: Option<&Media>) -> Request {
     let mut text = text;
     let mut qs = Vec::new();
     let mut want_safety = false;
@@ -198,7 +228,35 @@ pub fn build_request_text(policy: &Policy, text: String, it: &Item, rules: &[&Co
             text.push_str(&ex);
         }
     }
-    Request { text, images: vec![], questions: qs }
+    let mut images = Vec::new();
+    if let Some(m) = media.filter(|m| m.max_images > 0) {
+        let subjects: Vec<String> = rules
+            .iter()
+            .flat_map(|r| r.rule.when.any.iter().chain(&r.rule.when.all).chain(&r.rule.when.none))
+            .flat_map(|c| subject_refs(c))
+            .collect();
+        if !it.is_dir && it.kind() == "image" && (content || !subjects.is_empty()) {
+            if let Some(mut img) = crate::media::thumbnail(&it.path, 512) {
+                img.caption = Some("ITEM itself (the image being classified)".into());
+                images.push(img);
+                text.push_str("The first image shows ITEM itself.\n");
+            }
+        }
+        if !images.is_empty() {
+            let mut seen = HashSet::new();
+            for s in subjects {
+                if !seen.insert(s.clone()) {
+                    continue;
+                }
+                for r in m.subjects.get(&s).into_iter().flatten() {
+                    if images.len() < m.max_images {
+                        images.push(r.clone());
+                    }
+                }
+            }
+        }
+    }
+    Request { text, images, questions: qs }
 }
 
 #[derive(Clone, Debug)]
@@ -531,6 +589,7 @@ pub fn run(
     let started = std::time::Instant::now();
     let now = tidy_scan::fmt::now_secs();
     let items = collect(rules, now);
+    let media = judge.map(|j| Media::load(policy, j.caps()));
     // Items whose only applicable actionable rules are all blocked by guards
     // are not worth a paid call.
     let mut reqs = Vec::new();
@@ -543,7 +602,7 @@ pub fn run(
         let needs_judge = rs.iter().any(|r| !r.deterministic());
         if actionable && needs_judge {
             req_of.push(Some(reqs.len()));
-            reqs.push(build_request(policy, it, &rs, now, true));
+            reqs.push(build_request(policy, it, &rs, now, true, media.as_ref()));
         } else {
             req_of.push(None);
         }

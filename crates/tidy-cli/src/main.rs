@@ -1,4 +1,5 @@
 mod judge_cmds;
+mod mcp;
 mod plan_cmds;
 mod scan_cmds;
 mod space_cmds;
@@ -49,6 +50,8 @@ enum Cmd {
     Archive(space_cmds::ArchiveCmd),
     /// Watch inbox folders and judge new files as they arrive.
     Watch(watch::WatchCmd),
+    /// Run the MCP server on stdio (for agents).
+    Mcp,
     /// Check or test the policy file.
     #[command(subcommand)]
     Policy(judge_cmds::PolicyCmd),
@@ -92,6 +95,7 @@ fn main() {
         Cmd::Dupes(c) => space_cmds::cmd_dupes(c),
         Cmd::Archive(c) => space_cmds::cmd_archive(c),
         Cmd::Watch(c) => watch::cmd_watch(c),
+        Cmd::Mcp => mcp::serve(),
         Cmd::Policy(c) => judge_cmds::cmd_policy(c),
         Cmd::Judge(c) => judge_cmds::cmd_judge(c),
         Cmd::Calibrate(c) => judge_cmds::cmd_calibrate(c),

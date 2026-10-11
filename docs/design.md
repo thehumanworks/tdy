@@ -134,3 +134,38 @@ panic = "abort"
 strip = true
 ```
 Personal builds: `RUSTFLAGS="-C target-cpu=native"`. PGO later via `cargo-pgo`. No async runtime on non-network paths.
+
+## Implementation notes (v0.1, as built)
+
+Decisions made while building, beyond the spec above:
+
+- **Approval provenance.** Entries carry `approved_by`: `human` (TUI, `$EDITOR`, CLI) or `policy` (autonomous mode). MCP `tidy_apply` only runs those. Agents can propose and reject, never approve. MCP paths can't carry flags, and plans are addressed by id only.
+- **Two age floors.** Removals (delete, trash, quarantine, archive, dedupe) require `min_age` (default 7d) since the newest change. Organising actions (move, rename, copy, tag) only wait for a settle time (120 s, or the watcher's `--settle`).
+- **Rule combination.**
+  - Keep rules veto at τ = 0.15, and also when their question goes unanswered (fail-safe).
+  - Exclusive actions: the first rule with p ≥ τ wins. Otherwise the best rule with p ≥ max(0.5, τ − 0.25) is proposed as *uncertain*; uncertain entries are never auto-approved.
+  - Tags accumulate.
+  - A model-decided `delete` is downgraded to `trash` unless `safety.regenerable` ≥ 0.8 and `safety.loss` ≤ 1 (Minor). A loss ≥ 2.5, or no loss answer, marks the entry uncertain.
+- **Overlaps.** L1 entries win over L2 entries at or inside the same path.
+- **Decision cache.** Keyed by judge id and a digest of the request (evidence text, image hashes, questions). Rewording a criterion only re-asks the affected items.
+- **Cascade.** A later stage re-asks whenever any predicate lands in (0.2, 0.8) or is refused. The band is configurable.
+- **Evidence.** Metadata only by default: name, home-relative path, size, age, provenance xattrs (`kMDItemWhereFroms`, quarantine agent, last-used date; `user.xdg.origin.url` on Linux). `content = true` adds a 2 KB text excerpt or a 512 px JPEG thumbnail. Subject reference photos are attached when a criterion mentions `{name}`.
+- **Fingerprints.** (dev, ino) plus size and mtime for files; for directories, a fresh subtree summary (files, apparent bytes, newest mtime); a BLAKE3 hash for dedupe entries. The apply-time guard re-checks age against the fingerprint's mtime, and current file flags.
+- **Journal.** Records `begin` (with undo state such as previous tags and the archive path), `copied` (cross-volume, after fsync), `done` (with the full outcome) or `fail`. Recovery never deletes a source unless the destination is intact, and dry runs never recover.
+- **Filesystem safety.** `remove_tree` and `copy_tree` never follow symlinks or cross mount points. Guards block directories that contain mount points. Comparisons use resolved paths.
+- **Space actions.**
+  - Dedupe uses `clonefile` + rename (macOS) or `FIDEDUPERANGE` (Linux, kernel-verified); filesystems without clones get `trash` instead.
+  - Archive writes `.tar.zst` (zstd multithreaded, verified by re-reading) and quarantines the original.
+  - Compress uses APFS decmpfs via `ditto` with an atomic swap, or btrfs defragment.
+
+Measured (Linux, 2 vCPU):
+- **Scanner:** 1.55 s for 1.1M entries warm (2× du, 2.5× dust/gdu). Peak RSS is 151 MB at 11M entries.
+- **gpt-6-luna via the Decisions API:** p50 537 ms / p95 628 ms through a proxy. About 700 input tokens per item for metadata-only requests, about 740 with a thumbnail.
+
+Not built yet:
+- per-rule judges
+- FSEvents event-id incremental rescans (snapshots and `tidy diff` exist)
+- io_uring statx batching
+- PGO
+- video keyframes
+- Windows

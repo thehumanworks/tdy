@@ -91,7 +91,8 @@ pub fn line(e: &Entry) -> String {
         .first()
         .map(|a| format!(" · alt {}{}", a.rule, a.p.map(|p| format!(" {p:.2}")).unwrap_or_default()))
         .unwrap_or_default();
-    format!("{:<10} {:<5} {:<10} {}  {:>8}  {}{}  {}", e.status.as_str(), e.id, e.action.as_str(), what, size, e.provenance(), alt, undo)
+    let unsure = if e.evidence.as_ref().and_then(|v| v.get("uncertain")).and_then(|u| u.as_bool()) == Some(true) { "  ⚠ uncertain" } else { "" };
+    format!("{:<10} {:<5} {:<10} {}  {:>8}  {}{}  {}{}", e.status.as_str(), e.id, e.action.as_str(), what, size, e.provenance(), alt, undo, unsure)
 }
 
 pub fn render_editor(plan: &Plan) -> String {

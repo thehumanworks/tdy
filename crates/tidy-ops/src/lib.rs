@@ -3,6 +3,7 @@
 pub mod dirs;
 pub mod fingerprint;
 pub mod fsops;
+pub mod meta;
 pub mod probe;
 pub mod trash;
 

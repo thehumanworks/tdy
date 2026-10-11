@@ -368,7 +368,7 @@ id = "installers"
 action = "trash"
 scope = ["~/Downloads"]
 filter = { ext = ["dmg", "pkg", "iso", "msi", "exe", "zip"], older_than = "30d", min_size = "5MB" }
-when.any = ["An installer, disk image or archive of an application that can be downloaded again."]
+when.any = ["An application installer or disk image (such as a .dmg, .pkg, .exe or a zipped app) that can simply be downloaded again — not an archive of personal files."]
 
 [[rule]]
 id = "photos.dogs"

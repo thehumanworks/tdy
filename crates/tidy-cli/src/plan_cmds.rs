@@ -192,7 +192,10 @@ pub fn cmd_plan(c: PlanCmd) -> Result<()> {
     let started = std::time::Instant::now();
     let mut planned = planner::plan_detectors(&req, &policy, &guards, header)?;
     if !c.no_rules && !policy.rules.is_empty() {
-        crate::judge_cmds::add_policy_entries(&mut planned, &policy, &guards)?;
+        // A missing key or unreachable judge must not block deterministic cleanup.
+        if let Err(e) = crate::judge_cmds::add_policy_entries(&mut planned, &policy, &guards) {
+            eprintln!("{}", ui::yellow(&format!("policy rules skipped: {e:#}")));
+        }
     }
     let plan = &planned.plan;
     let path = store::save(plan)?;

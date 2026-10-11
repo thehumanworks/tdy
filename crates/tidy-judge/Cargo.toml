@@ -1,0 +1,18 @@
+[package]
+name = "tidy-judge"
+description = "Decision-model judges for Tidy: OpenAI Decisions and SystemOne (Jev, Clef)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+parking_lot.workspace = true
+base64 = "0.22"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier", "gzip"] }
+
+[dev-dependencies]
+tempfile.workspace = true

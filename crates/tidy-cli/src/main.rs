@@ -41,6 +41,23 @@ enum Cmd {
     Detectors,
     /// Write an example policy to ~/.config/tidy/policy.toml.
     Init(plan_cmds::InitCmd),
+    /// Check or test the policy file.
+    #[command(subcommand)]
+    Policy(judge_cmds::PolicyCmd),
+    /// Talk to the configured decision models directly.
+    #[command(subcommand)]
+    Judge(judge_cmds::JudgeCmd),
+    /// Label sample items and fit per-rule thresholds for the current judge.
+    Calibrate(judge_cmds::CalibrateCmd),
+    /// Benchmarks.
+    #[command(subcommand)]
+    Bench(BenchCmd),
+}
+
+#[derive(Subcommand)]
+enum BenchCmd {
+    /// Compare judge backends on your labelled items: agreement, latency, cost.
+    Judges(judge_cmds::BenchJudgesCmd),
 }
 
 fn main() {
@@ -64,6 +81,10 @@ fn main() {
         Cmd::Purge(c) => plan_cmds::cmd_purge(c),
         Cmd::Detectors => plan_cmds::cmd_detectors(),
         Cmd::Init(c) => plan_cmds::cmd_init(c),
+        Cmd::Policy(c) => judge_cmds::cmd_policy(c),
+        Cmd::Judge(c) => judge_cmds::cmd_judge(c),
+        Cmd::Calibrate(c) => judge_cmds::cmd_calibrate(c),
+        Cmd::Bench(BenchCmd::Judges(c)) => judge_cmds::cmd_bench_judges(c),
     };
     if let Err(e) = r {
         eprintln!("tidy: {e:#}");

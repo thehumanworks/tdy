@@ -9,6 +9,7 @@ license.workspace = true
 tidy-scan.workspace = true
 tidy-ops.workspace = true
 tidy-plan.workspace = true
+tidy-judge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

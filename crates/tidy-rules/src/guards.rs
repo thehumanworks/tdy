@@ -12,9 +12,13 @@ use tidy_scan::path::home_dir;
 
 #[derive(Clone, Debug)]
 pub struct GuardConfig {
-    /// Destructive actions require the newest file under the path to be at
-    /// least this old (seconds). Rules may ask for more, never less.
+    /// Removal-type actions (delete, trash, quarantine, archive, dedupe)
+    /// require the newest file under the path to be at least this old
+    /// (seconds). Rules may ask for more, never less.
     pub min_age: i64,
+    /// Organising actions (move, rename, copy) only wait for the item to
+    /// settle (finished downloading/writing).
+    pub settle: i64,
     /// Allow destructive actions inside cloud-synced folders.
     pub allow_cloud: bool,
     /// Extra user-protected paths (prefix match).
@@ -25,7 +29,7 @@ pub struct GuardConfig {
 
 impl Default for GuardConfig {
     fn default() -> Self {
-        GuardConfig { min_age: 7 * 86_400, allow_cloud: false, protect: Vec::new(), destinations: Vec::new() }
+        GuardConfig { min_age: 7 * 86_400, settle: 120, allow_cloud: false, protect: Vec::new(), destinations: Vec::new() }
     }
 }
 
@@ -205,7 +209,9 @@ impl Guards {
             return Ok(());
         }
         // age
-        let min_age = facts.min_age.unwrap_or(0).max(self.cfg.min_age);
+        let removal = matches!(action, Action::Delete | Action::Trash | Action::Quarantine | Action::Archive | Action::Dedupe);
+        let floor = if removal { self.cfg.min_age } else { self.cfg.settle };
+        let min_age = facts.min_age.unwrap_or(0).max(floor);
         if let Some(m) = facts.mtime_max {
             let age = tidy_scan::fmt::now_secs() - m;
             if age < min_age {

@@ -129,11 +129,29 @@ fn xdg_trash_dirs(p: &Path, dev: u64, create: bool) -> Result<(PathBuf, PathBuf)
         candidates.push(root.join(".Trash").join(uid.to_string()));
         candidates.push(root.join(format!(".Trash-{uid}")));
     }
-    for t in candidates {
-        let base = t.parent().unwrap_or(&t);
-        let base_dev = std::fs::metadata(base).or_else(|_| std::fs::metadata(base.parent().unwrap_or(base))).map(|m| m.dev());
-        if base_dev.ok() != Some(dev) {
+    for (i, t) in candidates.iter().enumerate() {
+        // Device of the nearest existing ancestor (the trash may not exist yet).
+        let mut anc = t.as_path();
+        let base_dev = loop {
+            if let Ok(m) = std::fs::metadata(anc) {
+                break Some(m.dev());
+            }
+            match anc.parent() {
+                Some(p) => anc = p,
+                None => break None,
+            }
+        };
+        if base_dev != Some(dev) {
             continue;
+        }
+        // $topdir/.Trash/$uid is only valid when an admin created $topdir/.Trash
+        // as a real, sticky directory (XDG trash spec).
+        if i == 1 {
+            use std::os::unix::fs::PermissionsExt;
+            match std::fs::symlink_metadata(t.parent().unwrap_or(t)) {
+                Ok(m) if m.is_dir() && m.permissions().mode() & 0o1000 != 0 => {}
+                _ => continue,
+            }
         }
         let files = t.join("files");
         let info = t.join("info");

@@ -17,6 +17,8 @@ fn home() -> &'static Path {
         unsafe {
             std::env::set_var("TIDY_HOME", t.path().join("tidy"));
             std::env::set_var("XDG_DATA_HOME", t.path().join("share"));
+            // Keep the OS trash (~/.Trash on macOS) inside the sandbox too.
+            std::env::set_var("HOME", t.path());
         }
         fs::create_dir_all(t.path().join("share")).unwrap();
         t

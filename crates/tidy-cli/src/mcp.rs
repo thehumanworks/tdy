@@ -401,6 +401,7 @@ mod tests {
             std::env::set_var("TIDY_HOME", t.path().join("state"));
             std::env::set_var("XDG_DATA_HOME", t.path().join("share"));
             std::env::set_var("TIDY_CONFIG_DIR", t.path().join("cfg"));
+            std::env::set_var("HOME", t.path());
         }
         let f = t.path().join("victim.bin");
         std::fs::write(&f, vec![0u8; 1000]).unwrap();

@@ -140,7 +140,7 @@ Personal builds: `RUSTFLAGS="-C target-cpu=native"`. PGO later via `cargo-pgo`. 
 
 Decisions made while building, beyond the spec above:
 
-- **Approval provenance.** Entries carry `approved_by`: `human` (TUI, `$EDITOR`, CLI) or `policy` (autonomous mode). MCP `tidy_apply` only runs those. Agents can propose and reject, never approve. MCP paths can't carry flags, and plans are addressed by id only.
+- **Approval provenance.** Entries carry `approved_by`: `human` (TUI, `$EDITOR`, CLI) or `policy` (autonomous mode). MCP `tidy_apply` only runs those. Agents can propose and reject, never approve. Plans are addressed by id only, and `tidy_plan` paths can't carry flags (`tidy_dupes` doesn't check yet).
 - **Two age floors.** Removals (delete, trash, quarantine, archive, dedupe) require `min_age` (default 7d) since the newest change. Organising actions (move, rename, copy, tag) only wait for a settle time (120 s, or the watcher's `--settle`).
 - **Rule combination.**
   - Keep rules veto at τ = 0.15, and also when their question goes unanswered (fail-safe).

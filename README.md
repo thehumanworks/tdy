@@ -213,4 +213,4 @@ bench/run.sh                  # needs hyperfine (+ du/dust/dua/gdu if you want t
 
 Code map: `tidy-scan` (readers, walker, index, snapshots), `tidy-ops` (fingerprints, trash/quarantine, safe fs ops, dupes/archive/compress, probes), `tidy-plan` (plan model, journal, apply/undo/recover, review), `tidy-rules` (guards, detectors, policy, L2 engine, media), `tidy-judge` (OpenAI Decisions, SystemOne, cache, cascade), `tidy-cli` (CLI, TUI, watch, MCP), `tidy-bench` (fixtures).
 
-Design notes are in `docs/design.md`.
+Docs: [architecture](docs/architecture.md) (goal, design, dependencies), [assessment](docs/assessment.md) (strengths, weaknesses, future ideas), [design spec](docs/design.md) (original spec and build decisions).

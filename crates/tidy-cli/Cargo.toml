@@ -24,6 +24,7 @@ serde_json.workspace = true
 libc.workspace = true
 ratatui = "0.30"
 crossterm = "0.29"
+notify = "8"
 
 [dev-dependencies]
 tempfile.workspace = true

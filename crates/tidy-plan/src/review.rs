@@ -56,16 +56,23 @@ impl Filter {
     }
 }
 
-/// Set `status` on every reviewable entry matching `f`. Returns how many changed.
-pub fn set_status(plan: &mut Plan, f: &Filter, status: Status) -> usize {
+/// Set `status` on every reviewable entry matching `f`, recording who
+/// approved. Returns how many changed.
+pub fn set_status(plan: &mut Plan, f: &Filter, status: Status, by: &str) -> usize {
     let mut n = 0;
     for e in plan.entries.iter_mut() {
         if e.status.reviewable() && f.matches(e) && e.status != status {
-            e.status = status;
+            set_one(e, status, by);
             n += 1;
         }
     }
     n
+}
+
+/// Change one entry's review status, keeping `approved_by` consistent.
+pub fn set_one(e: &mut Entry, status: Status, by: &str) {
+    e.status = status;
+    e.approved_by = (status == Status::Approved).then(|| by.to_string());
 }
 
 /// One-line, column-aligned description of an entry.
@@ -158,7 +165,9 @@ pub fn parse_editor(plan: &mut Plan, text: &str) -> Result<(usize, usize, usize)
             continue;
         }
         let st = seen.get(&e.id).copied().unwrap_or(Status::Rejected);
-        e.status = st;
+        if e.status != st {
+            set_one(e, st, "human");
+        }
         match st {
             Status::Approved => a += 1,
             Status::Rejected => r += 1,

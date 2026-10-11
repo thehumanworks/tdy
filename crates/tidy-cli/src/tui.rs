@@ -46,7 +46,7 @@ impl App<'_> {
     fn set(&mut self, st: Status) {
         if let Some(e) = self.current() {
             if e.status.reviewable() {
-                e.status = st;
+                tidy_plan::review::set_one(e, st, "human");
                 self.dirty = true;
             }
         }
@@ -58,7 +58,7 @@ impl App<'_> {
         for &i in &self.view {
             let e = &mut self.plan.entries[i];
             if e.status.reviewable() && e.status != st {
-                e.status = st;
+                tidy_plan::review::set_one(e, st, "human");
                 n += 1;
             }
         }

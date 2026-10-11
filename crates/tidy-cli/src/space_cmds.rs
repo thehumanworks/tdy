@@ -87,6 +87,7 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
             plan.entries.push(Entry {
                 id,
                 status: Status::Pending,
+                approved_by: None,
                 action,
                 path: f.path.clone(),
                 dest: Some(keeper.path.clone()),
@@ -177,6 +178,7 @@ pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
             plan.entries.push(Entry {
                 id: eid,
                 status: Status::Pending,
+                approved_by: None,
                 action,
                 path: p.clone(),
                 dest: None,

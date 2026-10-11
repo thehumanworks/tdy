@@ -586,9 +586,44 @@ pub fn run(
     concurrency: usize,
     progress: &(dyn Fn(usize, usize) + Sync),
 ) -> Result<L2Run> {
-    let started = std::time::Instant::now();
     let now = tidy_scan::fmt::now_secs();
     let items = collect(rules, now);
+    run_on(policy, rules, items, judge, guards, concurrency, progress)
+}
+
+/// Applicable rules for specific paths (watch mode: just-arrived files).
+pub fn items_for_paths(rules: &[CompiledRule], paths: &[PathBuf], now: i64) -> Vec<(Item, Vec<usize>)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut out = Vec::new();
+    for p in paths {
+        let Ok(md) = std::fs::symlink_metadata(p) else { continue };
+        if !(md.is_file() || md.is_dir()) {
+            continue;
+        }
+        let mut it = Item { path: p.clone(), is_dir: md.is_dir(), logical: md.len(), alloc: md.blocks() * 512, mtime: md.mtime(), flags: 0, depth: 1, dir: None };
+        if it.is_dir {
+            items::summarize_dir(&mut it);
+        }
+        let app: Vec<usize> = rules.iter().enumerate().filter(|(_, r)| r.applies(&it, now)).map(|(i, _)| i).collect();
+        if !app.is_empty() {
+            out.push((it, app));
+        }
+    }
+    out
+}
+
+/// Evaluate rules for already-collected items.
+pub fn run_on(
+    policy: &Policy,
+    rules: &[CompiledRule],
+    items: Vec<(Item, Vec<usize>)>,
+    judge: Option<&dyn Judge>,
+    guards: &Guards,
+    concurrency: usize,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Result<L2Run> {
+    let started = std::time::Instant::now();
+    let now = tidy_scan::fmt::now_secs();
     let media = judge.map(|j| Media::load(policy, j.caps()));
     // Items whose only applicable actionable rules are all blocked by guards
     // are not worth a paid call.
@@ -677,6 +712,7 @@ pub fn entries(run: &L2Run, mode: Mode, judge_id: Option<&str>, taken: &mut Hash
             out.push(Entry {
                 id,
                 status: if auto { Status::Approved } else { Status::Pending },
+                approved_by: auto.then(|| "policy".to_string()),
                 action: p.action,
                 path: o.item.path.clone(),
                 dest: p.dest.clone(),

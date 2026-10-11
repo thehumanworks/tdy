@@ -52,6 +52,7 @@ pub fn entries_from_findings(idx: &Index, findings: &[Finding], guards: &Guards,
         out.push(Entry {
             id,
             status: if mode == Mode::Autonomous { Status::Approved } else { Status::Pending },
+            approved_by: (mode == Mode::Autonomous).then(|| "policy".to_string()),
             action: f.action,
             path: f.path.clone(),
             dest: None,

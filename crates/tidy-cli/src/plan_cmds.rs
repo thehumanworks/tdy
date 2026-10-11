@@ -304,7 +304,7 @@ pub fn cmd_review(c: ReviewCmd) -> Result<()> {
         } else {
             Status::Pending
         };
-        let n = review::set_status(&mut plan, &f, status);
+        let n = review::set_status(&mut plan, &f, status, "human");
         store::save(&plan)?;
         let cnt = plan.counts();
         println!("{} {n} entries → {}  {}", ui::bold(&plan.header.id), status.as_str(), ui::dim(&format!("approved {} · rejected {} · pending {}", cnt.approved, cnt.rejected, cnt.pending)));

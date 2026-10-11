@@ -3,6 +3,7 @@ mod plan_cmds;
 mod scan_cmds;
 mod space_cmds;
 mod tui;
+mod watch;
 mod ui;
 
 use clap::{Parser, Subcommand};
@@ -46,6 +47,8 @@ enum Cmd {
     Dupes(space_cmds::DupesCmd),
     /// Plan archives (or transparent compression) for large, cold folders.
     Archive(space_cmds::ArchiveCmd),
+    /// Watch inbox folders and judge new files as they arrive.
+    Watch(watch::WatchCmd),
     /// Check or test the policy file.
     #[command(subcommand)]
     Policy(judge_cmds::PolicyCmd),
@@ -88,6 +91,7 @@ fn main() {
         Cmd::Init(c) => plan_cmds::cmd_init(c),
         Cmd::Dupes(c) => space_cmds::cmd_dupes(c),
         Cmd::Archive(c) => space_cmds::cmd_archive(c),
+        Cmd::Watch(c) => watch::cmd_watch(c),
         Cmd::Policy(c) => judge_cmds::cmd_policy(c),
         Cmd::Judge(c) => judge_cmds::cmd_judge(c),
         Cmd::Calibrate(c) => judge_cmds::cmd_calibrate(c),

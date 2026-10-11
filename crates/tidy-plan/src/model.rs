@@ -212,6 +212,10 @@ fn is_zero(v: &u64) -> bool {
 pub struct Entry {
     pub id: String,
     pub status: Status,
+    /// Who approved: "human" (CLI/TUI/editor) or "policy" (autonomous mode).
+    /// Agents over MCP can propose and reject, never approve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
     pub action: Action,
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]

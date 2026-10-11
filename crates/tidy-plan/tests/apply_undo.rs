@@ -68,6 +68,7 @@ fn entry(path: &Path, action: Action, dest: Option<PathBuf>, taken: &mut HashSet
     Entry {
         id,
         status: Status::Approved,
+        approved_by: Some("human".into()),
         action,
         path: path.to_path_buf(),
         dest,

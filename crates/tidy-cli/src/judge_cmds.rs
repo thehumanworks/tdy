@@ -580,12 +580,36 @@ pub fn cmd_calibrate(c: CalibrateCmd) -> Result<()> {
     fit_and_save(&pol, &rules, &built, &labels, c.target)
 }
 
+/// Whether a rule could apply to a labelled path (scope + name-based filters;
+/// size and age are not recorded with labels).
+fn label_applies(r: &CompiledRule, path: &Path) -> bool {
+    if !r.scopes.iter().any(|s| path.starts_with(s)) {
+        return false;
+    }
+    let it = Item { path: path.to_path_buf(), is_dir: false, logical: 0, alloc: 0, mtime: 0, flags: 0, depth: 1, dir: None };
+    let f = &r.filter;
+    if let Some(k) = f.kind.as_deref() {
+        if k != "file" && k != "dir" && it.kind() != k {
+            return false;
+        }
+    }
+    if !f.ext.is_empty() && !f.ext.contains(&it.ext()) {
+        return false;
+    }
+    if let Some(g) = &f.name {
+        if !items::glob_match(&g.to_lowercase(), &it.name().to_lowercase()) {
+            return false;
+        }
+    }
+    true
+}
+
 fn fit_and_save(pol: &Policy, rules: &[CompiledRule], built: &BuiltJudge, labels: &[Label], target: f64) -> Result<()> {
     let now = fmt::now_secs();
     let mut scored: std::collections::BTreeMap<String, Vec<(f64, bool)>> = Default::default();
     for l in labels {
         let it = Item { path: l.path.clone(), is_dir: false, logical: 0, alloc: 0, mtime: now, flags: 0, depth: 1, dir: None };
-        let app: Vec<&CompiledRule> = rules.iter().filter(|r| r.scopes.iter().any(|s| l.path.starts_with(s)) && !r.deterministic()).collect();
+        let app: Vec<&CompiledRule> = rules.iter().filter(|r| label_applies(r, &l.path) && !r.deterministic()).collect();
         if app.is_empty() {
             continue;
         }
@@ -666,7 +690,7 @@ pub fn cmd_bench_judges(c: BenchJudgesCmd) -> Result<()> {
         let mut cases = Vec::new();
         for l in &labels {
             let it = Item { path: l.path.clone(), is_dir: false, logical: 0, alloc: 0, mtime: now, flags: 0, depth: 1, dir: None };
-            let app: Vec<&CompiledRule> = rules.iter().filter(|r| r.scopes.iter().any(|s| l.path.starts_with(s))).collect();
+            let app: Vec<&CompiledRule> = rules.iter().filter(|r| label_applies(r, &l.path)).collect();
             if app.is_empty() {
                 continue;
             }
@@ -683,7 +707,7 @@ pub fn cmd_bench_judges(c: BenchJudgesCmd) -> Result<()> {
             };
             lat.push(r.latency_ms);
             tokens += r.input_tokens;
-            let app: Vec<&CompiledRule> = rules.iter().filter(|rr| rr.scopes.iter().any(|s| l.path.starts_with(s))).collect();
+            let app: Vec<&CompiledRule> = rules.iter().filter(|rr| label_applies(rr, &l.path)).collect();
             let (kind, _) = l2::decide(it, &app, Some(&r), &guards, now);
             let got = match &kind {
                 OutcomeKind::Kept { rule, .. } => Some(rule.clone()),

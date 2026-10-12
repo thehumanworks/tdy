@@ -171,6 +171,8 @@ Built after the first release (October 2026):
 - an automatic index cache: instant starts, `--cached` answers, subfolders cut out of a cached parent
 - patching cached indexes after apply and undo, instead of rescanning
 - huge folders stat-ed on several threads (Linux)
+- `tdy ask` and the UI's New plan screen: plans from plain-English requests, cleanups, duplicates and archives without leaving `tdy ui`
+- the command renamed from `tidy` to `tdy` (macOS ships HTML Tidy as `/usr/bin/tidy`), with folders and variables to match
 
 Tried and dropped: io_uring statx batching (1.7–2.3× slower than plain statx on warm metadata).
 

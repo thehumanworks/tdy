@@ -85,7 +85,7 @@ pub fn build_judge(policy: &Policy, no_cache: bool) -> Result<Option<BuiltJudge>
     Ok(Some(BuiltJudge { judge, id, models }))
 }
 
-fn progress_bar(label: &'static str) -> impl Fn(usize, usize) + Sync {
+pub fn progress_bar(label: &'static str) -> impl Fn(usize, usize) + Sync {
     let tty = std::io::stderr().is_terminal();
     move |done, total| {
         if tty && (done == total || done % 8 == 0) {

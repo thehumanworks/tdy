@@ -4,13 +4,14 @@
 //!   items into a plan.
 //! - **Plans** reviews plans, applies them (after a dry run and a
 //!   confirmation) and undoes them.
-//! - **Cleanup** runs detectors and policy rules on a folder.
+//! - **New plan** makes a plan for a folder: a cleanup (detectors and
+//!   policy rules), a request in plain English, duplicates or archives.
 //!
 //! Disk and network work runs on background threads (`worker`); the screen
 //! only ever draws state and reacts to keys.
 
-mod cleanup;
 mod explore;
+mod newplan;
 mod plans;
 mod worker;
 
@@ -66,16 +67,16 @@ pub(crate) fn spinner() -> &'static str {
 pub enum Tab {
     Explore,
     Plans,
-    Cleanup,
+    NewPlan,
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::Explore, Tab::Plans, Tab::Cleanup];
+    const ALL: [Tab; 3] = [Tab::Explore, Tab::Plans, Tab::NewPlan];
     fn title(self) -> &'static str {
         match self {
             Tab::Explore => "Explore",
             Tab::Plans => "Plans",
-            Tab::Cleanup => "Cleanup",
+            Tab::NewPlan => "New plan",
         }
     }
 }
@@ -87,6 +88,8 @@ pub enum Act {
     Toast(String),
     /// Open this plan on the Plans screen.
     OpenPlan(String),
+    /// Go to the New plan screen.
+    NewPlan(newplan::Start),
 }
 
 pub enum Confirm {
@@ -114,7 +117,7 @@ pub struct App {
     pub tab: Tab,
     pub explore: explore::Explore,
     pub plans: plans::Plans,
-    pub cleanup: cleanup::Cleanup,
+    pub newplan: newplan::NewPlan,
     pub ctx: Ctx,
     rx: Receiver<Msg>,
     pub dialog: Option<Dialog>,
@@ -145,7 +148,7 @@ impl App {
             tab: Tab::Explore,
             explore: explore::Explore::new(root.clone()),
             plans: plans::Plans::new(),
-            cleanup: cleanup::Cleanup::new(&root),
+            newplan: newplan::NewPlan::new(&root),
             ctx,
             rx,
             dialog: None,
@@ -161,7 +164,7 @@ impl App {
     }
 
     pub fn busy(&self) -> bool {
-        self.explore.scanning.is_some() || self.plans.busy.is_some() || self.cleanup.running.is_some()
+        self.explore.scanning.is_some() || self.plans.busy.is_some() || self.newplan.running.is_some()
     }
 
     fn toast(&mut self, s: impl Into<String>) {
@@ -178,10 +181,17 @@ impl App {
                 self.promote();
             }
             Act::Toast(s) => self.toast(s),
-            // A finished job only jumps to the plan when nothing else is going on.
-            Act::OpenPlan(id) if background && (self.tab != Tab::Explore || self.typing() || self.dialog.is_some() || self.help) => {
+            // A finished job only jumps to the plan when nothing else is going
+            // on (and not away from a plan being reviewed).
+            Act::OpenPlan(id) if background && (self.tab == Tab::Plans || self.typing() || self.dialog.is_some() || self.help) => {
                 self.toast(format!("plan {id} is ready — 2 opens the Plans screen"));
                 self.plans.refresh();
+            }
+            Act::NewPlan(start) => {
+                self.tab = Tab::NewPlan;
+                self.help = false;
+                let a = self.newplan.start(start, &self.ctx);
+                self.act(a, background);
             }
             Act::OpenPlan(id) => {
                 self.tab = Tab::Plans;
@@ -211,7 +221,7 @@ impl App {
         match self.tab {
             Tab::Explore => self.explore.typing,
             Tab::Plans => self.plans.typing(),
-            Tab::Cleanup => self.cleanup.editing,
+            Tab::NewPlan => self.newplan.editing.is_some(),
         }
     }
 
@@ -249,7 +259,7 @@ impl App {
                 }
                 KeyCode::Char('1') => return self.switch(Tab::Explore),
                 KeyCode::Char('2') => return self.switch(Tab::Plans),
-                KeyCode::Char('3') => return self.switch(Tab::Cleanup),
+                KeyCode::Char('3') => return self.switch(Tab::NewPlan),
                 KeyCode::Tab => {
                     let i = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
                     return self.switch(Tab::ALL[(i + 1) % Tab::ALL.len()]);
@@ -264,7 +274,7 @@ impl App {
         let (handled, a) = match self.tab {
             Tab::Explore => self.explore.on_key(k, &self.ctx),
             Tab::Plans => self.plans.on_key(k, &self.ctx),
-            Tab::Cleanup => self.cleanup.on_key(k, &self.ctx),
+            Tab::NewPlan => self.newplan.on_key(k, &self.ctx),
         };
         self.act(a, false);
         // typing may just have ended: a waiting dialog can show now
@@ -317,20 +327,20 @@ impl App {
                 Act::None
             }
             Msg::Proposed { action, result } => self.explore.on_proposed(action, result),
-            Msg::CleanupScanning(p) => {
-                self.cleanup.on_scanning(p);
+            Msg::PlanScanning(p) => {
+                self.newplan.on_scanning(p);
                 Act::None
             }
-            Msg::CleanupPhase(p) => {
-                self.cleanup.on_phase(p);
+            Msg::PlanPhase(p) => {
+                self.newplan.on_phase(p);
                 Act::None
             }
-            Msg::CleanupJudging(d, t) => {
-                self.cleanup.on_judging(d, t);
+            Msg::PlanJudging(d, t) => {
+                self.newplan.on_judging(d, t);
                 Act::None
             }
-            Msg::CleanupDone(r) => {
-                let a = self.cleanup.on_done(r);
+            Msg::PlanDone(r) => {
+                let a = self.newplan.on_done(r);
                 self.plans.refresh();
                 a
             }
@@ -372,7 +382,7 @@ impl App {
         match self.tab {
             Tab::Explore => self.explore.draw(f, body, &self.ctx),
             Tab::Plans => self.plans.draw(f, body),
-            Tab::Cleanup => self.cleanup.draw(f, body, &self.ctx),
+            Tab::NewPlan => self.newplan.draw(f, body, &self.ctx),
         }
 
         // bottom: toast, else the screen's key hints
@@ -390,7 +400,7 @@ impl App {
                     match self.tab {
                         Tab::Explore => self.explore.hints(),
                         Tab::Plans => self.plans.hints(),
-                        Tab::Cleanup => self.cleanup.hints(),
+                        Tab::NewPlan => self.newplan.hints(),
                     }
                 ),
                 dim(),
@@ -451,11 +461,14 @@ fn draw_help(f: &mut Frame<'_>, tab: Tab) {
             ("E", "ask the policy rules (may call the judge)"),
             ("s / b", "sort order / which bytes to show"),
             ("/", "filter by name"),
+            ("p", "plan this folder: detectors + policy rules"),
+            ("a", "ask about this folder in plain English"),
             ("o", "reveal in Finder / file manager"),
             ("r", "rescan   (Esc cancels a running scan)"),
         ],
         Tab::Plans => vec![
             ("↑↓ ⏎", "choose and open a plan"),
+            ("n", "new plan (from the list)"),
             ("a r p space", "approve / reject / pending / cycle"),
             ("A R", "approve / reject everything shown"),
             ("/ ⏎", "filter / details"),
@@ -464,12 +477,16 @@ fn draw_help(f: &mut Frame<'_>, tab: Tab) {
             ("L", "show or hide the log"),
             ("Esc q", "back to the list"),
         ],
-        Tab::Cleanup => vec![
+        Tab::NewPlan => vec![
+            ("← →", "kind: cleanup, ask, duplicates, archive"),
             ("e", "edit the folder"),
-            ("d / p", "toggle detectors / policy rules"),
-            ("⏎", "run: scan, detectors, judge → new plan"),
+            ("⏎", "make the plan (it opens on Plans when ready)"),
+            ("Cleanup: d / p", "toggle detectors / policy rules"),
+            ("Ask: w", "write the request in plain English"),
+            ("Duplicates: m", "minimum file size"),
+            ("Archive: g / m / c", "age / size / compress in place"),
             ("o", "open the result on the Plans screen"),
-            ("Esc", "cancel the scan"),
+            ("Esc", "stop typing; cancel a scan"),
         ],
     });
     let lines: Vec<Line> =

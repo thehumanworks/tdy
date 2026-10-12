@@ -1,4 +1,5 @@
 mod app;
+mod ask_cmds;
 mod judge_cmds;
 mod mcp;
 mod plan_cmds;
@@ -35,6 +36,9 @@ enum Cmd {
     Diff(scan_cmds::DiffCmd),
     /// Propose actions (detectors + policy rules) as a reviewable plan.
     Plan(plan_cmds::PlanCmd),
+    /// Make a plan from a request in plain English, e.g.
+    /// `tdy ask trash screenshots in Downloads older than 30 days`.
+    Ask(ask_cmds::AskCmd),
     /// List plans.
     Plans,
     /// Print a plan's entries.
@@ -125,6 +129,7 @@ fn main() {
         Cmd::Top(c) => scan_cmds::cmd_top(c),
         Cmd::Diff(c) => scan_cmds::cmd_diff(c),
         Cmd::Plan(c) => plan_cmds::cmd_plan(c),
+        Cmd::Ask(c) => ask_cmds::cmd_ask(c),
         Cmd::Plans => plan_cmds::cmd_plans(),
         Cmd::Show(c) => plan_cmds::cmd_show(c),
         Cmd::Review(c) => plan_cmds::cmd_review(c),

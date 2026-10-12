@@ -1,5 +1,6 @@
 //! Guards (L0), detectors (L1), the policy file, and plan building.
 
+pub mod ask;
 pub mod calib;
 pub mod checks;
 pub mod detect;

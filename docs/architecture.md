@@ -62,15 +62,15 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 
 | Crate | Role | Depends on | Lines (src / tests) |
 |---|---|---|---|
-| `tdy-scan` | Platform directory readers, the work-stealing walker, the directory-only index, snapshots, the index cache and patching, file visitor | — | 3,055 / 438 |
-| `tdy-ops` | Fingerprints, safe filesystem primitives, trash and quarantine, probes (open files, git, cloud, mounts), xattr metadata, space actions | scan | 1,845 / — |
-| `tdy-plan` | Plan model (JSONL), store, fsync'd journal, apply / undo / crash recovery, review helpers, keeping cached indexes in step | scan, ops | 1,579 / 412 |
+| `tdy-scan` | Platform directory readers, the work-stealing walker, the directory-only index, snapshots, the index cache and patching, file visitor | — | 3,291 / 557 |
+| `tdy-ops` | Fingerprints, safe filesystem primitives, trash and quarantine, probes (open files, git, cloud, mounts), xattr metadata, space actions | scan | 1,941 / — |
+| `tdy-plan` | Plan model (JSONL), store, fsync'd journal, apply / undo / crash recovery, review helpers, keeping cached indexes in step | scan, ops | 1,630 / 418 |
 | `tdy-judge` | Provider-neutral question IR, OpenAI and SystemOne backends, mock, persistent cache, cascade, HTTP with adaptive concurrency | — | 1,129 / — |
-| `tdy-rules` | L0 guards, L1 detectors, policy file and presets, L2 engine, item evidence, rule checks, EXIF and thumbnails, calibration, planner | scan, ops, plan, judge | 3,712 / 463 |
-| `tdy-cli` | The `tdy` binary: commands, the interactive UI (`tdy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 6,189 / — |
+| `tdy-rules` | L0 guards, L1 detectors, policy file and presets, L2 engine, item evidence, rule checks, EXIF and thumbnails, calibration, planner | scan, ops, plan, judge | 4,339 / 463 |
+| `tdy-cli` | The `tdy` binary: commands, plain-English requests, the interactive UI (`tdy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 6,883 / — |
 | `tdy-bench` | `tdy-fixture`: deterministic trees for benchmarks; `tdy-cachebench`: cached starts and patches against rescans | scan | 256 / — |
 
-That is about 17,800 lines of Rust (counted with `wc -l`) plus about 1,300 lines of integration tests. There are 65 tests in total; unit tests live next to the code.
+That is about 19,500 lines of Rust (counted with `wc -l`) plus about 1,400 lines of integration tests. There are 75 tests in total; unit tests live next to the code.
 
 ## 4. Data flow
 
@@ -126,9 +126,9 @@ recover  on the next apply/undo: reconcile journal + filesystem; never delete a 
 
 - **Explore** browses the directory index, sorted by size, name, age or item count. It shows the cached index (§5.1) at once and replaces it when a background scan finishes; after an apply or undo it reloads the patched index instead of rescanning. Folders and their totals come from the index; the files of the folder on screen are read on demand, so memory stays proportional to folders. Each folder found by the detectors carries a detector tag. The details panel shows guard verdicts, computed from the scan's data so there is no second walk. Marked items become a trash or quarantine plan through the same code as MCP proposals (`propose.rs`), but approved by the human.
 - **Plans** reuses the review component of `tdy review` (`tui.rs`, saving after each change). Apply always runs a dry run first, shows the result, and waits for `y`. Undo also asks first.
-- **Cleanup** runs `plan_detectors` and `policy_entries` on one folder and shows scan and judge progress as they happen.
+- **New plan** makes a plan for one folder, four ways: **Cleanup** (`plan_detectors` and `policy_entries`), **Ask** (a plain-English request, §5.4; the interpretation updates as you type), **Duplicates** (`dupes_plan`) and **Archive** (`archive_plan`). It shows scan and judge progress as they happen, and the finished plan opens on Plans unless you are reviewing another one there. `p` and `a` in Explore start a cleanup or a request for the folder on screen; `n` on the Plans list opens the screen.
 
-Scans, explanations, rule evaluation, proposals, cleanups, applies and undos each run on a worker thread and report over a channel (`app/worker.rs`). The screen redraws every 100 ms while work runs, and every 500 ms otherwise. Scans can be cancelled through `ScanProgress`.
+Scans, explanations, rule evaluation, proposals, new plans, applies and undos each run on a worker thread and report over a channel (`app/worker.rs`). The screen redraws every 100 ms while work runs, and every 500 ms otherwise. Scans can be cancelled through `ScanProgress`.
 
 Dialogs queue: one never replaces another. Dialogs from finished jobs wait until no text is being typed, then ignore keys for 400 ms, so a stray keystroke can't confirm an apply. Edits to a plan are refused while a job runs on it. Child processes run with captured output, so they never draw over the screen.
 
@@ -223,6 +223,8 @@ Move destinations get their own check: never into system, credential, app-data o
 
 **Presets** are rule packs compiled into the binary, all off by default: `installers`, `screenshots`, `stale-downloads`, `archive-leftovers` and `protect.personal`. A user rule with the same id replaces the preset's. Every preset except `archive-leftovers` brings its own `policy test` cases.
 
+**Requests in plain English** (`ask.rs`, used by `tdy ask` and the UI's Ask): a small parser, not a model, reads the action (the leading verb; `remove` and `delete` mean the trash unless the request says `permanently`), the folder (`in Downloads` resolves against the current folder, then home; a word that isn't a folder stays in the description, as in "photos taken in Paris"), age, size, kind and extension filters, a destination (`to …`) and tags (`as …`). What is left becomes the rule's criterion, sent to the judge together with the whole request; when the filters describe the items completely, no judge is needed. The one-off rule runs through the L2 engine with your keep rules (presets included) and always in manual mode, so entries wait for review.
+
 **L2 engine** (`l2.rs`):
 - **Applicable rules:** scope, filter and code check. A keep rule counts only when an action rule applies too. A removal-only keep rule counts only when a lossy removal applies.
 - **Questions:** one predicate per criterion. A `choice` question is added for `pick_from`. Removals get two safety questions: *regenerable?* (predicate) and *loss cost* (a 0–3 score).
@@ -259,7 +261,7 @@ Move destinations get their own check: never into system, credential, app-data o
 |---|---|
 | Interactive | `ui [PATH]`, or plain `tdy` in a terminal |
 | Analyse | `scan`, `top`, `diff` |
-| Plans | `plan`, `plans`, `show`, `review`, `apply`, `undo`, `explain`, `purge` |
+| Plans | `plan`, `ask`, `plans`, `show`, `review`, `apply`, `undo`, `explain`, `purge` |
 | Space | `dupes [--plan]`, `archive [--transparent]` |
 | Policy | `init`, `presets [NAME]`, `detectors`, `policy check`, `policy test`, `calibrate` |
 | Judges | `judge ping`, `judge ask`, `bench judges` |
@@ -295,6 +297,8 @@ There is no async runtime: network I/O is the only blocking wait that matters, a
 | Index cache, snapshots | `<cache>/snapshots/<root-hash>/` (`auto.idx`; `latest.idx` and history from `scan --save`) | `TDY_CACHE_DIR`, `XDG_CACHE_HOME` |
 
 `<data>` is `~/Library/Application Support/tdy` on macOS and `$XDG_DATA_HOME/tdy` (default `~/.local/share/tdy`) on Linux. `<cache>` is `~/Library/Caches/tdy` on macOS and `~/.cache/tdy` on Linux.
+
+Before the rename to `tdy`, these folders were called `tidy`. On first run, `tdy` moves each old folder to its new name and leaves a link at the old path, so absolute paths in older plans (quarantined items, the policy file) still resolve. It skips folders chosen by `TDY_*` variables and folders that already exist under both names. Quarantine roots on other volumes keep their old `.tidy-quarantine` names; they are listed by full path, so `purge` still finds them.
 
 ## 8. Platform matrix
 
@@ -373,7 +377,7 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
 
 ## 10. Testing and tooling
 
-- `cargo test` runs 65 tests:
+- `cargo test` runs 75 tests:
   - scanner (totals against a reference walk and `du`, lookups and top files, snapshot round-trip and diff, a 12,000-entry folder split across 1, 2 and 8 threads)
   - index cache and patching, each checked folder by folder against a fresh scan: cache round trip and choice of index, cut-outs, patches after removals, renames, new nested folders and restores, folders rewritten or replaced under the same name, an index that had fallen behind, landing in folders the change created, hard links (refused), and syncing cached indexes, including a scan that ran during the change
   - filesystem ops (trash and quarantine round-trips, symlink safety, mount listing, drift detection, dupes and archives, bplist and tags)
@@ -382,7 +386,9 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
   - L2 semantics with scripted judges
   - presets end to end
   - MCP approval enforcement
-  - the interactive UI, headless (ratatui test backend): browse, mark, plan, dry run, apply and undo shown without a rescan, starting from the cached index, cleanup, dialog queueing and keystroke safety, non-UTF-8 names
+  - plain-English requests: actions, folders, ages, sizes, kinds, destinations, tags, and what's missing
+  - the rename: old folders move once and leave links; plans written by `tidy` still load
+  - the interactive UI, headless (ratatui test backend): browse, mark, plan, dry run, apply and undo shown without a rescan, starting from the cached index, making plans (cleanup, `p` from Explore, a request in plain English, duplicates, archives), dialog queueing and keystroke safety, non-UTF-8 names
 - `flake.nix` packages Tidy for Nix (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`) and provides an overlay, a NixOS/nix-darwin module, a home-manager module (policy written and checked at build time, `tdy watch` as a systemd or launchd user service) and a dev shell. `nix flake check` builds the package, runs the tests in the build sandbox, and checks Rust and Nix formatting. Files are in `nix/`.
 - `scripts/install.sh` runs `cargo install` (tuned for the CPU unless `--portable`) and checks that `tdy` on PATH is this binary.
 - `scripts/check-macos.sh` type-checks the macOS code paths from Linux (`aarch64-apple-darwin`) with a stub C compiler.

@@ -71,12 +71,35 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
         }
         return Ok(());
     }
+    let SpacePlan { plan, blocked, .. } = dupes_plan(roots, &groups)?;
+    store::save(&plan)?;
+    let cnt = plan.counts();
+    println!(
+        "{} {}  {}",
+        ui::bold("plan"),
+        ui::bold(&plan.header.id),
+        ui::dim(&format!("{} actions · {} reclaimable · {} blocked by guards", cnt.total, fmt::bytes(cnt.reclaimable), blocked))
+    );
+    println!("{}", ui::dim(&format!("next: tdy review {}", plan.header.id)));
+    Ok(())
+}
+
+/// A plan from one of the space finders, not saved yet.
+pub struct SpacePlan {
+    pub plan: Plan,
+    /// Items the guards refused.
+    pub blocked: usize,
+}
+
+/// Clone-dedupe the copies in `groups` where the filesystem can share
+/// storage, else trash them; the first file of each group is kept.
+pub fn dupes_plan(roots: Vec<PathBuf>, groups: &[space::DupGroup]) -> Result<SpacePlan> {
     let (policy, hash, ppath) = crate::plan_cmds::load_policy(None)?;
     let guards = Guards::new(policy.guard_config());
-    let mut plan = Plan { header: planner::new_header(roots.clone(), Mode::Manual, ppath, hash, None), entries: vec![] };
+    let mut plan = Plan { header: planner::new_header(roots, Mode::Manual, ppath, hash, None), entries: vec![] };
     let mut taken = HashSet::new();
     let mut blocked = 0;
-    for g in &groups {
+    for g in groups {
         let keeper = &g.files[0];
         let can_clone = space::clone_supported(&keeper.path);
         for f in &g.files[1..] {
@@ -121,16 +144,7 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
             });
         }
     }
-    store::save(&plan)?;
-    let cnt = plan.counts();
-    println!(
-        "{} {}  {}",
-        ui::bold("plan"),
-        ui::bold(&plan.header.id),
-        ui::dim(&format!("{} actions · {} reclaimable · {} blocked by guards", cnt.total, fmt::bytes(cnt.reclaimable), blocked))
-    );
-    println!("{}", ui::dim(&format!("next: tdy review {}", plan.header.id)));
-    Ok(())
+    Ok(SpacePlan { plan, blocked })
 }
 
 #[derive(Args)]
@@ -153,38 +167,53 @@ pub struct ArchiveCmd {
     pub lines: usize,
 }
 
-/// Plan archives (or transparent compression) for large, cold, compressible folders.
-pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
-    let roots = roots(&c.paths)?;
-    let older = fmt::parse_duration(&c.older).context("--older")?;
-    let min = fmt::parse_bytes(&c.min_size).context("--min-size")?;
+/// What `archive_plan` looks for.
+#[derive(Clone, Debug)]
+pub struct ArchiveOpts {
+    /// Untouched for at least this many seconds.
+    pub older: i64,
+    pub min_size: u64,
+    /// Skip folders whose sample compresses worse than this ratio.
+    pub max_ratio: f64,
+    /// Transparent filesystem compression (APFS/btrfs) instead of archives.
+    pub transparent: bool,
+}
+
+/// Archive (or compress in place) large, cold, compressible folders.
+pub fn archive_plan(roots: Vec<PathBuf>, o: &ArchiveOpts, progress: Option<std::sync::Arc<tdy_scan::ScanProgress>>) -> Result<SpacePlan> {
     let (policy, hash, ppath) = crate::plan_cmds::load_policy(None)?;
     let guards = Guards::new(policy.guard_config());
     let mut plan = Plan { header: planner::new_header(roots.clone(), Mode::Manual, ppath, hash, None), entries: vec![] };
     let mut taken = HashSet::new();
+    let mut blocked = 0;
+    let older = o.older;
     let cutoff = fmt::now_secs() - older;
     let dcfg = policy.detect_config();
     for root in &roots {
-        let idx = tdy_scan::scan(root, &tdy_scan::ScanOptions { top_k: 0, ..Default::default() })?;
+        let opts = tdy_scan::ScanOptions { top_k: crate::scan_cmds::CACHED_TOP, progress: progress.clone(), ..Default::default() };
+        let idx = tdy_scan::scan(root, &opts)?;
+        // a full scan: the next look at this folder can start from it
+        let _ = tdy_scan::cache::store(&idx);
         // Regenerable artifacts are for deletion, not archiving.
         let artifacts: Vec<PathBuf> = tdy_rules::detect::detect(&idx, &tdy_rules::detect::DetectConfig { min_size: 0, ..dcfg.clone() })
             .into_iter()
             .map(|f| f.path)
             .collect();
-        for id in idx.stale_dirs(cutoff, min, SizeKind::Alloc) {
+        for id in idx.stale_dirs(cutoff, o.min_size, SizeKind::Alloc) {
             let p = idx.path(id);
             if artifacts.iter().any(|a| p.starts_with(a) || a.starts_with(&p)) {
                 continue;
             }
             let node = idx.nodes[id as usize];
-            let action = if c.transparent && space::transparent_compression_supported(&p) { Action::Compress } else { Action::Archive };
+            let action = if o.transparent && space::transparent_compression_supported(&p) { Action::Compress } else { Action::Archive };
             let git = tdy_rules::guards::git_roots_in_index(&idx, id);
             let facts = Facts { mtime_max: Some(node.mtime_max), flags: 0, regenerable: false, min_age: Some(older) };
             if guards.check(&p, action, &facts, Some(&git)).is_err() {
+                blocked += 1;
                 continue;
             }
             let ratio = space::compressibility(&p, 64);
-            if ratio > c.max_ratio {
+            if ratio > o.max_ratio {
                 continue;
             }
             let Ok(fp) = tdy_ops::fingerprint(&p, None, false) else { continue };
@@ -227,6 +256,19 @@ pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
         }
     }
     plan.entries.sort_by_key(|e| std::cmp::Reverse(e.bytes.private));
+    Ok(SpacePlan { plan, blocked })
+}
+
+/// Plan archives (or transparent compression) for large, cold, compressible folders.
+pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
+    let roots = roots(&c.paths)?;
+    let o = ArchiveOpts {
+        older: fmt::parse_duration(&c.older).context("--older")?,
+        min_size: fmt::parse_bytes(&c.min_size).context("--min-size")?,
+        max_ratio: c.max_ratio,
+        transparent: c.transparent,
+    };
+    let SpacePlan { plan, .. } = archive_plan(roots, &o, None)?;
     store::save(&plan)?;
     let cnt = plan.counts();
     println!(

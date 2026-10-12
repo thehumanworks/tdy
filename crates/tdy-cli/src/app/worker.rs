@@ -45,8 +45,9 @@ pub enum ExecOp {
     Undo,
 }
 
+/// A plan made on the New plan screen, saved.
 #[derive(Debug, Default, Clone)]
-pub struct CleanupResult {
+pub struct PlanResult {
     pub plan: String,
     pub actions: usize,
     pub reclaimable: u64,
@@ -54,7 +55,23 @@ pub struct CleanupResult {
     pub blocked_bytes: u64,
     pub judge: Option<String>,
     pub warnings: Vec<String>,
+    /// What was found, e.g. "12 duplicate groups".
+    pub found: Option<String>,
     pub elapsed_ms: u64,
+}
+
+impl PlanResult {
+    fn saved(plan: &tdy_plan::Plan, started: std::time::Instant) -> anyhow::Result<Self> {
+        store::save(plan)?;
+        let c = plan.counts();
+        Ok(PlanResult {
+            plan: plan.header.id.clone(),
+            actions: c.total,
+            reclaimable: c.reclaimable,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            ..Default::default()
+        })
+    }
 }
 
 pub struct ProposeResult {
@@ -87,10 +104,10 @@ pub enum Msg {
         action: Action,
         result: Result<ProposeResult, String>,
     },
-    CleanupScanning(Arc<ScanProgress>),
-    CleanupPhase(&'static str),
-    CleanupJudging(usize, usize),
-    CleanupDone(Result<CleanupResult, String>),
+    PlanScanning(Arc<ScanProgress>),
+    PlanPhase(&'static str),
+    PlanJudging(usize, usize),
+    PlanDone(Result<PlanResult, String>),
     ExecLine {
         plan: String,
         kind: EventKind,
@@ -195,13 +212,13 @@ pub fn propose(tx: Sender<Msg>, action: Action, items: Vec<(PathBuf, tdy_plan::B
 pub fn cleanup(tx: Sender<Msg>, root: PathBuf, detectors: bool, rules: bool) {
     std::thread::spawn(move || {
         let tx2 = tx.clone();
-        let result = (|| -> anyhow::Result<CleanupResult> {
+        let result = (|| -> anyhow::Result<PlanResult> {
             let started = std::time::Instant::now();
             let (policy, hash, ppath) = crate::plan_cmds::load_policy(None)?;
             let guards = Guards::new(policy.guard_config());
             let header = tdy_rules::planner::new_header(vec![root.clone()], policy.mode, ppath, hash, None);
             let progress = Arc::new(ScanProgress::default());
-            let _ = tx2.send(Msg::CleanupScanning(progress.clone()));
+            let _ = tx2.send(Msg::PlanScanning(progress.clone()));
             let req = tdy_rules::planner::PlanRequest {
                 roots: vec![root.clone()],
                 scan: ScanOptions { top_k: crate::scan_cmds::CACHED_TOP, progress: Some(progress), ..Default::default() },
@@ -211,12 +228,12 @@ pub fn cleanup(tx: Sender<Msg>, root: PathBuf, detectors: bool, rules: bool) {
             for idx in &planned.indexes {
                 let _ = tdy_scan::cache::store(idx);
             }
-            let mut out = CleanupResult::default();
+            let mut out = PlanResult::default();
             if rules && !policy.rules.is_empty() {
-                let _ = tx2.send(Msg::CleanupPhase("judging"));
+                let _ = tx2.send(Msg::PlanPhase("judging"));
                 let txj = tx2.clone();
                 let judged = crate::judge_cmds::policy_entries(&mut planned, &policy, &guards, &move |d, t| {
-                    let _ = txj.send(Msg::CleanupJudging(d, t));
+                    let _ = txj.send(Msg::PlanJudging(d, t));
                 });
                 match judged {
                     Ok(sum) => {
@@ -227,7 +244,7 @@ pub fn cleanup(tx: Sender<Msg>, root: PathBuf, detectors: bool, rules: bool) {
                     Err(e) => out.warnings.push(format!("policy rules skipped: {e:#}")),
                 }
             }
-            let _ = tx2.send(Msg::CleanupPhase("saving"));
+            let _ = tx2.send(Msg::PlanPhase("saving"));
             store::save(&planned.plan)?;
             let c = planned.plan.counts();
             out.plan = planned.plan.header.id.clone();
@@ -239,7 +256,70 @@ pub fn cleanup(tx: Sender<Msg>, root: PathBuf, detectors: bool, rules: bool) {
             Ok(out)
         })()
         .map_err(err);
-        let _ = tx.send(Msg::CleanupDone(result));
+        let _ = tx.send(Msg::PlanDone(result));
+    });
+}
+
+/// A request in plain English, as a one-off rule.
+pub fn ask(tx: Sender<Msg>, req: tdy_rules::ask::Request) {
+    std::thread::spawn(move || {
+        let txj = tx.clone();
+        let result = (|| -> anyhow::Result<PlanResult> {
+            let started = std::time::Instant::now();
+            let _ = txj.send(Msg::PlanPhase("judging"));
+            let txp = txj.clone();
+            let a = crate::ask_cmds::ask_plan(&req, &move |d, t| {
+                let _ = txp.send(Msg::PlanJudging(d, t));
+            })?;
+            let _ = txj.send(Msg::PlanPhase("saving"));
+            let mut out = PlanResult::saved(&a.plan, started)?;
+            out.judge = a.summary.judge_line();
+            out.warnings = a.summary.warnings;
+            out.blocked = a.blocked;
+            out.blocked_bytes = a.blocked_bytes;
+            out.found = Some(format!("{} item(s) looked at", a.summary.items));
+            Ok(out)
+        })()
+        .map_err(err);
+        let _ = tx.send(Msg::PlanDone(result));
+    });
+}
+
+/// Duplicate files under `root`: clone-dedupe or trash the copies.
+pub fn dupes(tx: Sender<Msg>, root: PathBuf, min_size: u64) {
+    std::thread::spawn(move || {
+        let result = (|| -> anyhow::Result<PlanResult> {
+            let started = std::time::Instant::now();
+            let _ = tx.send(Msg::PlanPhase("finding duplicates"));
+            let groups = tdy_ops::space::find_duplicates(std::slice::from_ref(&root), min_size, 0)?;
+            let _ = tx.send(Msg::PlanPhase("checking"));
+            let sp = crate::space_cmds::dupes_plan(vec![root], &groups)?;
+            let mut out = PlanResult::saved(&sp.plan, started)?;
+            out.blocked = sp.blocked;
+            out.found = Some(format!("{} duplicate group(s)", groups.len()));
+            Ok(out)
+        })()
+        .map_err(err);
+        let _ = tx.send(Msg::PlanDone(result));
+    });
+}
+
+/// Large, cold, compressible folders under `root`.
+pub fn archive(tx: Sender<Msg>, root: PathBuf, opts: crate::space_cmds::ArchiveOpts) {
+    std::thread::spawn(move || {
+        let result = (|| -> anyhow::Result<PlanResult> {
+            let started = std::time::Instant::now();
+            let progress = Arc::new(ScanProgress::default());
+            let _ = tx.send(Msg::PlanScanning(progress.clone()));
+            let sp = crate::space_cmds::archive_plan(vec![root], &opts, Some(progress))?;
+            let _ = tx.send(Msg::PlanPhase("saving"));
+            let mut out = PlanResult::saved(&sp.plan, started)?;
+            out.blocked = sp.blocked;
+            out.found = Some(format!("{} cold folder(s)", sp.plan.entries.len()));
+            Ok(out)
+        })()
+        .map_err(err);
+        let _ = tx.send(Msg::PlanDone(result));
     });
 }
 

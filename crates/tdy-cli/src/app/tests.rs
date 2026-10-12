@@ -83,7 +83,7 @@ fn explore_mark_plan_apply_undo() {
     pump(&mut app, "the scan", |a| a.explore.index.is_some());
     let s = screen(&mut app);
     assert!(s.contains("big/") && s.contains("small/") && s.contains("loose.bin"), "{s}");
-    assert!(s.contains("1 Explore") && s.contains("2 Plans") && s.contains("3 Cleanup"));
+    assert!(s.contains("1 Explore") && s.contains("2 Plans") && s.contains("3 New plan"));
 
     // largest first; open it, see its file, come back to the same row
     assert_eq!(app.explore.rows[0].name, "big");
@@ -212,15 +212,149 @@ fn cleanup_makes_a_plan() {
     }
     key(&mut app, KeyCode::Enter);
     key(&mut app, KeyCode::Enter); // run
-    pump(&mut app, "the cleanup", |a| a.cleanup.result.is_some());
-    let r = app.cleanup.result.clone().unwrap().unwrap();
+    // the finished plan opens on the Plans screen
+    pump(&mut app, "the cleanup", |a| a.newplan.result.is_some() && a.plans.review.is_some());
+    let r = app.newplan.result.clone().unwrap().unwrap();
     assert_eq!(r.actions, 1, "{r:?}");
-    assert!(screen(&mut app).contains(&format!("plan {}", r.plan)));
-    ch(&mut app, 'o');
     assert_eq!(app.tab, Tab::Plans);
     let v = app.plans.review.as_ref().unwrap();
+    assert_eq!(v.plan.header.id, r.plan);
     assert_eq!(v.plan.entries[0].path, proj.join("target"));
     assert_eq!(v.plan.entries[0].status, tdy_plan::Status::Pending);
+    // n on the list starts another
+    key(&mut app, KeyCode::Esc);
+    ch(&mut app, 'n');
+    assert_eq!(app.tab, Tab::NewPlan);
+}
+
+#[test]
+fn p_in_explore_plans_the_folder_on_screen() {
+    let (_lock, t) = sandbox();
+    fs::create_dir_all(t.path().join("cfg")).unwrap();
+    fs::write(t.path().join("cfg/policy.toml"), "[detectors]\nmin_size = \"1KB\"\n").unwrap();
+    let code = t.path().join("code");
+    let proj = code.join("app");
+    write(&proj.join("Cargo.toml"), 10);
+    write(&proj.join("target/debug/app"), 20_000);
+    write(&code.join("other/node_modules/x/index.js"), 20_000);
+    write(&code.join("other/package.json"), 10);
+    let mut app = App::new(code.clone());
+    app.arm = Duration::ZERO;
+    pump(&mut app, "the scan", |a| a.explore.index.is_some());
+    select(&mut app, "app");
+    key(&mut app, KeyCode::Enter);
+    ch(&mut app, 'p');
+    assert_eq!(app.tab, Tab::NewPlan);
+    assert!(app.newplan.running.is_some(), "starts right away");
+    pump(&mut app, "the plan", |a| a.plans.review.is_some());
+    let v = app.plans.review.as_ref().unwrap();
+    // only the folder on screen: app/target, not other/node_modules
+    let paths: Vec<_> = v.plan.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(paths, [fs::canonicalize(&proj).unwrap().join("target")]);
+}
+
+#[test]
+fn ask_in_plain_english() {
+    let (_lock, t) = sandbox();
+    let dl = t.path().join("work/Downloads");
+    for n in ["Figma.dmg", "setup.pkg", "notes.txt"] {
+        write(&dl.join(n), 30_000);
+    }
+    let mut app = App::new(t.path().join("work"));
+    app.arm = Duration::ZERO;
+    pump(&mut app, "the scan", |a| a.explore.index.is_some());
+    ch(&mut app, 'a');
+    assert_eq!((app.tab, app.newplan.kind), (Tab::NewPlan, newplan::Kind::Ask));
+    assert_eq!(app.newplan.editing, Some(newplan::Field::Request), "ready to type");
+    for c in "trash installers in Downloads older than 30 days".chars() {
+        ch(&mut app, c);
+    }
+    let s = screen(&mut app);
+    assert!(s.contains("installers and disk images · older than 30 days"), "{s}");
+    assert!(s.contains("not needed: the filters say it all"), "{s}");
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, "the plan", |a| a.plans.review.is_some());
+    let v = app.plans.review.as_ref().unwrap();
+    let mut names: Vec<_> = v.plan.entries.iter().map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, ["Figma.dmg", "setup.pkg"]);
+    assert!(v.plan.entries.iter().all(|e| e.action == Action::Trash && e.status == tdy_plan::Status::Pending));
+    assert!(v.plan.header.note.as_deref().unwrap().starts_with("asked: trash installers"));
+
+    // a request that needs the judge says so before running
+    ch(&mut app, '3');
+    ch(&mut app, 'w');
+    for _ in 0..100 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    for c in "quarantine screenshots in Downloads".chars() {
+        ch(&mut app, c);
+    }
+    assert!(screen(&mut app).contains("but no judge is configured"));
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, "the refusal", |a| a.dialog.is_some());
+    let d = app.dialog.as_ref().unwrap();
+    assert!(d.lines.iter().any(|l| l.to_string().contains("needs a judge")));
+}
+
+#[test]
+fn duplicates_and_archives() {
+    let (_lock, t) = sandbox();
+    let root = t.path().join("work");
+    write(&root.join("a/report.bin"), 50_000);
+    write(&root.join("b/report-copy.bin"), 50_000);
+    write(&root.join("cold/old/data.bin"), 400_000);
+    let mut app = App::new(root.clone());
+    app.arm = Duration::ZERO;
+    pump(&mut app, "the scan", |a| a.explore.index.is_some());
+    ch(&mut app, '3');
+    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Right);
+    assert_eq!(app.newplan.kind, newplan::Kind::Dupes);
+    ch(&mut app, 'm');
+    for _ in 0..5 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    for c in "10KB".chars() {
+        ch(&mut app, c);
+    }
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, "the duplicates plan", |a| a.plans.review.is_some());
+    let v = app.plans.review.as_ref().unwrap();
+    assert_eq!(v.plan.entries.len(), 1, "one copy of the pair");
+    assert!(matches!(v.plan.entries[0].action, Action::Dedupe | Action::Trash));
+    assert_eq!(app.newplan.result.as_ref().unwrap().as_ref().unwrap().found.as_deref(), Some("1 duplicate group(s)"));
+
+    // archives: folders untouched for 30 days, from 100 KB
+    key(&mut app, KeyCode::Esc);
+    ch(&mut app, '3');
+    key(&mut app, KeyCode::Right);
+    assert_eq!(app.newplan.kind, newplan::Kind::Archive);
+    ch(&mut app, 'g');
+    for _ in 0..5 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    for c in "30d".chars() {
+        ch(&mut app, c);
+    }
+    key(&mut app, KeyCode::Enter);
+    ch(&mut app, 'm');
+    for _ in 0..6 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    for c in "100KB".chars() {
+        ch(&mut app, c);
+    }
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, "the archive plan", |a| a.newplan.result.is_some() && a.newplan.running.is_none());
+    let r = app.newplan.result.clone().unwrap().unwrap();
+    assert!(r.actions >= 1, "{r:?}");
+    let v = app.plans.review.as_ref().unwrap();
+    assert_eq!(v.plan.header.id, r.plan);
+    assert!(v.plan.entries.iter().all(|e| e.action == Action::Archive));
+    assert!(v.plan.entries.iter().any(|e| e.path.ends_with("cold")));
 }
 
 #[test]
@@ -314,10 +448,10 @@ fn background_results_never_hijack_input() {
     ch(&mut app, '3');
     ch(&mut app, 'e');
     pump(&mut app, "plan C", |a| a.plans.rows.len() == 3);
-    assert_eq!(app.tab, Tab::Cleanup);
-    assert!(app.cleanup.editing);
+    assert_eq!(app.tab, Tab::NewPlan);
+    assert_eq!(app.newplan.editing, Some(newplan::Field::Folder));
     ch(&mut app, 'p');
-    assert!(app.cleanup.path.ends_with('p'), "typed into the folder field");
+    assert!(app.newplan.path.ends_with('p'), "typed into the folder field");
 
     // background dialogs ignore keys for a moment after they appear
     key(&mut app, KeyCode::Enter); // stop editing

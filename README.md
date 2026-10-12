@@ -85,6 +85,7 @@ tdy                           # interactive UI in a terminal (same as `tdy ui .`
 tdy scan ~                    # where the space goes (dust-style tree)
 tdy top ~ -n 20               # largest files   (--dirs: by bytes held directly)
 tdy plan ~                    # detectors + your policy rules → a plan
+tdy ask trash installers in Downloads older than 30 days   # a plan from plain English
 tdy review                    # TUI (or --edit for $EDITOR, or --approve --rule X)
 tdy apply --dry-run           # rehearse: verifies fingerprints, guards, destinations
 tdy apply
@@ -99,9 +100,9 @@ tdy undo                      # reverse what can be reversed
 
 | Screen | What you do there |
 |---|---|
-| **Explore** | Browse where the space goes, sorted by size, name, age or item count. It opens on the index of the last scan at once and refreshes it in the background. Folders come from the index; files are read when you open their folder. Detectors tag build output and caches. `i` shows sizes and guard verdicts; `E` asks your policy rules. Mark items with space; `t` or `z` turns them into a trash or quarantine plan, approved by you. |
-| **Plans** | Review any plan: approve, reject, filter, details. `X` applies it after a dry run and your confirmation; `U` undoes it. A log shows each step. |
-| **Cleanup** | Pick a folder and run detectors and policy rules, with live progress (files scanned, items judged, cost). The result opens as a plan. |
+| **Explore** | Browse where the space goes, sorted by size, name, age or item count. It opens on the index of the last scan at once and refreshes it in the background. Folders come from the index; files are read when you open their folder. Detectors tag build output and caches. `i` shows sizes and guard verdicts; `E` asks your policy rules. Mark items with space; `t` or `z` turns them into a trash or quarantine plan, approved by you. `p` makes a plan for the folder on screen; `a` asks about it in plain English. |
+| **Plans** | Review any plan: approve, reject, filter, details. `X` applies it after a dry run and your confirmation; `U` undoes it. A log shows each step. `n` makes a new plan. |
+| **New plan** | Make a plan for a folder, four ways (←→ to switch): **Cleanup** runs the detectors and your policy rules; **Ask** takes a request in plain English and shows how it was understood as you type; **Duplicates** and **Archive** find identical files and large cold folders. Progress is live (files scanned, items judged), and the finished plan opens on Plans. |
 
 Nothing changes on disk until you confirm an apply, which uses the same guards, fingerprint checks and journal as `tdy apply`. Scans, judging and applies run in the background, so the screen stays responsive, and a dialog from a finished job never replaces one you have open. After an apply or undo, Explore shows the change without rescanning (see [Speed](#speed)).
 
@@ -114,6 +115,7 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 | `ui [PATH]` | The interactive UI (also plain `tdy` in a terminal) |
 | `scan`, `top`, `diff` | Size tree, largest files/dirs, changes since the last `scan --save`. `--cached` answers from the last scan instead of scanning |
 | `plan [PATHS]` | L1 detectors + L2 policy rules → plan (`--no-rules`, `--no-detectors`, `--show-blocked`) |
+| `ask REQUEST` | A plan from plain English, e.g. `tdy ask move videos over 1GB to ~/Archive` (`--explain` shows how it was understood, `--from` sets the folder) |
 | `plans`, `show` | List plans; print entries (filters: `--rule`, `--action`, `--status`, `--min-p`, `--under`) |
 | `review` | Approve or reject entries: TUI, `--edit`, `--approve-all`, `--approve/--reject` + filters |
 | `apply`, `undo` | Execute approved entries (`--dry-run`, `--entry`); reverse applied ones |
@@ -129,6 +131,21 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 | `bench judges` | Agreement, p50/p95 latency and cost of each backend on your labels |
 | `purge [--older 30d] --yes` | Permanently empty old quarantine buckets |
 | `mcp` | MCP server on stdio |
+
+## Asking in plain English
+
+`tdy ask` (or **Ask** on the UI's New plan screen) turns a request into a one-off rule and makes a plan from it. The parts code can check become filters; whatever is left describes the items, and the judge decides which match.
+
+| You write | It becomes |
+|---|---|
+| `trash`, `remove`, `get rid of` · `permanently delete` · `quarantine` · `move … to X` · `copy … to X` · `tag … as X` · `archive` · `compress` | the action (`remove` and `delete` mean the trash unless you say `permanently`) |
+| `in Downloads`, `in ~/Desktop`, `in "My Stuff"` | the folder, searched with everything inside (default: the current folder) |
+| `older than 30 days`, `not opened in the last 6 months`, `more than a year old` · `changed in the last 2 weeks` | age filters |
+| `over 1GB`, `bigger than 500 MB` · `under 1KB` | size filters |
+| `installers`, `videos`, `folders`, `pdfs`, `dmg files` … | kind or extension filters |
+| anything else (`screenshots`, `old tax receipts`, `photos of my dog`) | what the judge checks each item against |
+
+Entries always wait for your review, and your keep rules (presets included) still protect what they protect. A request that the filters fully describe (`trash dmg files older than a year`) needs no judge.
 
 ## The policy file
 

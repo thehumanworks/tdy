@@ -253,6 +253,7 @@ impl Plans {
                 self.refresh();
                 (true, Act::None)
             }
+            KeyCode::Char('n') => (true, Act::NewPlan(super::newplan::Start { kind: None, folder: None, run: false })),
             _ => (false, Act::None),
         }
     }
@@ -261,7 +262,7 @@ impl Plans {
         match &self.review {
             Some(_) if self.busy.is_some() => "working… · L log".into(),
             Some(_) => "X apply (dry run first) · U undo · L log · Esc back".into(),
-            None => "⏎ open · r refresh".into(),
+            None => "⏎ open · n new plan · r refresh".into(),
         }
     }
 
@@ -283,7 +284,7 @@ impl Plans {
         let title = match &self.error {
             Some(e) => Line::from(Span::styled(format!(" {e}"), fg(Color::Red))),
             None if self.rows.is_empty() => Line::from(Span::styled(
-                " No plans yet. Make one on the Cleanup screen (3), or mark items on Explore (1) and press t.",
+                " No plans yet. n makes one (cleanup, a request in plain English, duplicates, archives), or mark items on Explore and press t.",
                 dim(),
             )),
             None => Line::from(vec![

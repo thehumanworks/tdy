@@ -50,10 +50,11 @@ An honest look at v0.1 (October 2026). Numbers come from the benchmark and live 
 - **Staleness detection.** Fingerprints, guards and rule checks are re-run at apply time, so a plan made yesterday can't act on something that changed since.
 - **Agent-safe.** Over MCP, agents can propose and reject but never approve (`approved_by` provenance). Plans are addressed by id, and `tdy_plan` paths can't carry flags.
 
-- **An interactive UI with the same rules.** `tdy ui` creates and applies plans through the same guards, fingerprint checks and journal. Every apply shows a dry run first and waits for confirmation, and background results can't hijack a keystroke.
+- **An interactive UI with the same rules.** `tdy ui` makes every kind of plan (cleanup, a request in plain English, duplicates, archives) and applies plans through the same guards, fingerprint checks and journal. Every apply shows a dry run first and waits for confirmation, and background results can't hijack a keystroke.
 
 ### Smart without being expensive
 - **Rules in plain English**, for organising (move, copy, rename, tag, `pick_from` among your folders), not just deleting.
+- **Requests in plain English.** `tdy ask` and the UI's Ask turn "trash screenshots in Downloads older than a month" into a one-off rule: code checks the folder, age, size and kind; the judge only decides what the words describe. A live run picked the one screenshot out of three images in 1.7 s for $0.0002.
 - **Cost-aware engine.**
   - Deterministic rules need no model.
   - Items every action would be blocked on are never sent.
@@ -81,7 +82,7 @@ Ranked by impact on you today.
 | 9 | **Apply is sequential.** One entry at a time, rewriting the whole plan every 64 entries. Fine for hundreds of entries; slow for 100k dedupes. | Low–medium | `exec::apply` |
 | 10 | **Watch mode limits.** It runs in the foreground, with no launchd or systemd unit. Changes made while it isn't running are missed (no FSEvents event-id resume). Linux inotify needs one watch per directory. | Medium for autonomous use | `watch.rs` |
 | 11 | **Presets are English and default-path only.** Localised macOS screenshot names and custom capture folders aren't recognised. `installers` includes `.zip` and relies on the model to tell app zips from personal archives. | Low–medium | `presets.rs` |
-| 12 | **Thin CLI test coverage.** `tdy-cli` has tests for MCP approval and the interactive UI only. `policy test`, `calibrate` and `watch` were only checked by hand or in live runs. Parsers for untrusted input (zip central directory, bplist, `getattrlistbulk` buffers, cached index files) are bounds-checked but not fuzzed. | Medium | 65 tests in total; 8 in `tdy-cli` |
+| 12 | **Thin CLI test coverage.** `tdy-cli` has tests for MCP approval and the interactive UI only. `policy test`, `calibrate` and `watch` were only checked by hand or in live runs. Parsers for untrusted input (zip central directory, bplist, `getattrlistbulk` buffers, cached index files) are bounds-checked but not fuzzed. | Medium | 75 tests in total; 11 in `tdy-cli` |
 | 13 | **Hard-coded judge prices.** Cost estimates will drift as prices change. | Low | `price_per_mtok` |
 | 14 | **Some actions are one-way.** `delete`, `dedupe` and `compress` can't be undone. Dedupe and compress keep content identical, and `delete` is kept for regenerable artefacts. | Low | `undo ✗` in plans |
 | 15 | **Dependency weight.** 174 packages in the dependency graph (image decoders, TUI, TLS, notify), which is heavy for a "frugal" tool. `memmap2` is declared in the workspace but not used directly. | Low | `cargo tree` |
@@ -126,5 +127,6 @@ Ranked by impact on you today.
 ### Later
 - **Performance:** PGO via `cargo-pgo`.
 - **Routines:** scheduled plans and a weekly "what changed / what's reclaimable" report.
-- **Agents:** plans exposed as MCP resources, and a streamable HTTP transport.
+- **Agents:** plans exposed as MCP resources, a `tdy_ask` tool, and a streamable HTTP transport.
+- **Requests:** remember asks that worked as policy rules (`tdy ask --save`), and understand dates ("from 2019", "before March").
 - **Windows:** NTFS reader, Recycle Bin, ReFS block cloning.

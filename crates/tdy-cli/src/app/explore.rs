@@ -2,6 +2,7 @@
 //! from the scan; files are listed on demand for the folder on screen, so
 //! memory stays proportional to the number of folders.
 
+use super::newplan::{Kind as PlanKind, Start};
 use super::worker::{self, ProposeResult, Scanned, Tag};
 use super::{Act, Confirm, Ctx, Dialog, accent, bold, dim, fg, plural, spinner};
 use crate::judge_cmds::RulesExplanation;
@@ -584,6 +585,9 @@ impl Explore {
                 self.start_scan(ctx);
                 Act::None
             }
+            // plans for the folder on screen
+            KeyCode::Char('p') => Act::NewPlan(Start { kind: Some(PlanKind::Cleanup), folder: Some(self.cwd_path()), run: true }),
+            KeyCode::Char('a') => Act::NewPlan(Start { kind: Some(PlanKind::Ask), folder: Some(self.cwd_path()), run: false }),
             KeyCode::Char('o') => match self.selected() {
                 Some(r) => reveal(&r.path),
                 None => Act::None,
@@ -610,7 +614,7 @@ impl Explore {
         if self.typing {
             return "type to filter · ⏎ keep · Esc clear".into();
         }
-        "⏎ open · ⌫ up · space mark · t trash · i details · s sort · / filter · ? more".into()
+        "⏎ open · ⌫ up · space mark · t trash · p plan here · a ask · i details · / filter · ? more".into()
     }
 
     pub fn draw(&mut self, f: &mut Frame<'_>, area: Rect, ctx: &Ctx) {

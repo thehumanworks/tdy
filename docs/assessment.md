@@ -65,7 +65,7 @@ Ranked by impact on you today.
 |---|---|---|---|
 | 1 | **macOS has never run.** The macOS code is only type-checked from Linux: `getattrlistbulk` reader, `clonefile` dedupe, decmpfs compression, Finder tags, `~/.Trash`, FSEvents, `sips`. | High: macOS is the primary target (your Mac Studio) | `scripts/check-macos.sh` only runs `cargo check` |
 | 2 | **No CI.** Tests, clippy and the macOS check run by hand. | High | No workflow files in the repo |
-| 3 | **The binary name clashes on macOS.** macOS ships Apple's HTML Tidy at `/usr/bin/tidy`. Unless Cargo's bin directory comes first on PATH, `tidy` runs that instead (`Config: unknown option: help`). Anything started with a minimal PATH, such as launchd jobs or some MCP clients, can still pick the wrong one. | Medium | `scripts/install.sh` checks PATH and warns; configs should use the absolute path |
+| 3 | **The binary name clashes on macOS.** macOS ships Apple's HTML Tidy at `/usr/bin/tidy`. Unless Cargo's bin directory comes first on PATH, `tidy` runs that instead (`Config: unknown option: help`). Anything started with a minimal PATH, such as launchd jobs or some MCP clients, can still pick the wrong one. | Medium | `scripts/install.sh` checks PATH and warns. Nix installs avoid it: profiles come before `/usr/bin`, and the home-manager service uses the store path |
 | 4 | **Privacy of evidence.** File names, home-relative paths and download URLs go to a third-party API for every judged item. Only the home prefix is redacted. Content excerpts and thumbnails are opt-in, except that a criterion mentioning a subject (`{me}`) always sends the item's thumbnail. | Medium–high for sensitive folders | `items::evidence_with` |
 | 5 | **Uncalibrated by default.** Thresholds (0.8, 0.15 for keep) are defaults until you label items. The first `protect.personal` wording over-protected installers until reworded. A provider silently changing a model under the same name would leave stale cached answers. | Medium | `policy test` history; cache keyed by judge id |
 | 6 | **SystemOne backends are untested live** (Jev, Clef). Only request/response shapes are tested against the documentation. | Medium (only if you switch provider) | `body_and_parse_match_docs` |
@@ -84,7 +84,7 @@ Ranked by impact on you today.
 
 ### Now: prove it on the Mac and lock it in
 1. **Run the full suite and benchmarks on macOS (APFS)** and fix what breaks: reader, private bytes, `clonefile`, decmpfs, Finder tags, trash, FSEvents.
-2. **CI matrix:** GitHub Actions on macOS (arm64) and Linux (ext4 plus an xfs or btrfs loop device). Run tests, clippy, `check-macos.sh` and a small benchmark smoke test.
+2. **CI matrix:** GitHub Actions on macOS (arm64) and Linux (ext4 plus an xfs or btrfs loop device). Run `nix flake check` (build, tests, formatting), clippy, `check-macos.sh` and a small benchmark smoke test.
 3. **Fuzz the parsers** with `cargo-fuzz`: zip central directory, bplist, `getattrlistbulk` decoding, journal recovery.
 4. **Cache hygiene:** compaction, a TTL or size cap, and prices read from config.
 

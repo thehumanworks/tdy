@@ -458,7 +458,8 @@ mod tests {
         );
         assert!(call("tidy_apply", &json!({"plan": "/tmp/evil.jsonl"})).is_err());
         // guards apply to proposals too
-        let v = call("tidy_propose", &json!({"actions": [{"action": "delete", "path": "/usr/bin", "reason": "x"}]})).unwrap();
+        // (/etc/passwd exists everywhere, including the Nix build sandbox)
+        let v = call("tidy_propose", &json!({"actions": [{"action": "delete", "path": "/etc/passwd", "reason": "x"}]})).unwrap();
         assert!(v["plan"].is_null());
         assert!(v["rejected"][0]["why"].as_str().unwrap().contains("system"));
     }

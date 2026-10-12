@@ -2,3 +2,5 @@
 .env
 *.local.toml
 .tidy-sync*
+result
+result-*

@@ -365,6 +365,7 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
   - L2 semantics with scripted judges
   - presets end to end
   - MCP approval enforcement
+- `flake.nix` packages Tidy for Nix (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`) and provides an overlay, a NixOS/nix-darwin module, a home-manager module (policy written and checked at build time, `tidy watch` as a systemd or launchd user service) and a dev shell. `nix flake check` builds the package, runs the tests in the build sandbox, and checks Rust and Nix formatting. Files are in `nix/`.
 - `scripts/install.sh` runs `cargo install` (tuned for the CPU unless `--portable`) and checks that `tidy` on PATH is this binary, not macOS's `/usr/bin/tidy` (HTML Tidy).
 - `scripts/check-macos.sh` type-checks the macOS code paths from Linux (`aarch64-apple-darwin`) with a stub C compiler.
 - `bench/run.sh` compares `tidy scan` with du, dust, dua and gdu using hyperfine on `tidy-fixture` trees. Results are in `bench/results-linux-x86_64.md`.

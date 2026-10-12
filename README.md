@@ -19,6 +19,65 @@ scripts/install.sh --portable    # the same without -C target-cpu=native
 
 To build without installing: `cargo build --release` (binary at `target/release/tidy`). Requires Rust 1.88+. The release profile uses fat LTO, one codegen unit and `panic = "abort"`.
 
+### Nix: NixOS, home-manager, nix-darwin
+
+The repository is a flake (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`). To try it without installing:
+
+```sh
+nix run ~/projects/tidy -- --help
+```
+
+Add it to your own flake. Use `github:<owner>/tidy` instead of the local path once the repository is pushed:
+
+```nix
+inputs.tidy = {
+  url = "git+file:///Users/tomas/projects/tidy";
+  inputs.nixpkgs.follows = "nixpkgs";   # needs a nixpkgs with Rust 1.88+
+};
+```
+
+**System-wide** (NixOS, or nix-darwin with `darwinModules.default`):
+
+```nix
+imports = [ inputs.tidy.nixosModules.default ];
+programs.tidy.enable = true;
+```
+
+**Per user** (home-manager), with your policy and the optional watch service:
+
+```nix
+imports = [ inputs.tidy.homeModules.default ];
+programs.tidy = {
+  enable = true;
+  # Written to ~/.config/tidy/policy.toml and checked with `tidy policy check`
+  # at build time, so a broken policy fails the switch, not the next plan.
+  settings = {
+    presets = [ "screenshots" "archive-leftovers" ];
+    judge.default = "luna";
+    judge.backends.luna = { kind = "openai-decisions"; model = "gpt-6-luna"; api_key_env = "OPENAI_API_KEY"; };
+    rule = [ { id = "protect.finance"; action = "keep"; scope = [ "~/Downloads" ]; when.any = [ "Tax or finance documents." ]; } ];
+  };
+  policyTests = [ { name = "tax return is protected"; item = { name = "2024-tax-return.pdf"; folder = "~/Downloads"; }; expect = "protect.finance"; } ];
+  watch = {
+    enable = true;                      # systemd user service on Linux, launchd agent on macOS
+    paths = [ "~/Downloads" "~/Desktop" ];
+    environmentFile = "/run/user/1000/secrets/tidy.env";   # OPENAI_API_KEY=…; a string path, so it stays out of the Nix store
+  };
+};
+```
+
+**Other outputs:**
+- `overlays.default` adds `pkgs.tidy`.
+- `packages.<system>.default.override { withHeif = true; }` adds `heif-convert` for HEIC thumbnails on Linux.
+- `devShells.default` (`nix develop`) has the Rust toolchain, clippy, rust-analyzer and hyperfine.
+- `nix flake check` builds the package, runs the test suite, and checks Rust and Nix formatting.
+
+**Notes:**
+- The package appends a minimal `git` to `tidy`'s PATH, so the git guard works even where git isn't installed If git is already on your PATH, `withGit = false` drops it and shrinks the closure from about 170 MiB to 55 MiB. Changing these runtime tools only rebuilds a small wrapper, not Tidy itself.
+- Nix profiles come before `/usr/bin` on PATH, so the macOS HTML Tidy clash goes away. The watch service runs Tidy by its full store path.
+- nixpkgs' `html-tidy` also provides `bin/tidy`, so don't install both into the same profile.
+- On macOS, privacy protection can stop the watch agent reading `~/Desktop`, `~/Documents` or `~/Downloads`. If `~/Library/Logs/tidy-watch.log` shows `Operation not permitted`, give the `tidy` binary Full Disk Access in System Settings → Privacy & Security. Its store path changes with each update, so you'll need to grant it again.
+
 ## Quick start
 
 ```sh

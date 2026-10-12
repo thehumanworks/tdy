@@ -130,6 +130,17 @@ fn strs(a: &Value, k: &str) -> Vec<String> {
     a.get(k).and_then(Value::as_array).map(|v| v.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
 
+/// Paths from an agent are data, never flags: anything that would reach a
+/// subprocess as `--autonomous`, `--plan` or `--policy` is refused, and the
+/// rest is passed after `--`.
+fn agent_paths(a: &Value) -> Result<Vec<String>> {
+    let paths = strs(a, "paths");
+    if let Some(bad) = paths.iter().find(|p| p.starts_with('-') || p.is_empty()) {
+        anyhow::bail!("invalid path `{bad}`");
+    }
+    Ok(paths)
+}
+
 fn canon(p: &str) -> Result<PathBuf> {
     Ok(std::fs::canonicalize(expand_tilde(p))?)
 }
@@ -197,12 +208,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
                       "detector": det.map(|d| json!({"id": d.0, "what": d.1, "hint": d.2})), "guards": guards_v}))
         }
         "tidy_plan" => {
-            let paths = strs(a, "paths");
-            // Paths are data, never flags: an agent must not be able to pass
-            // `--autonomous` or `--policy` through here.
-            if let Some(bad) = paths.iter().find(|p| p.starts_with('-') || p.is_empty()) {
-                anyhow::bail!("invalid path `{bad}`");
-            }
+            let paths = agent_paths(a)?;
             let mut args = vec!["plan".to_string(), "--json".to_string()];
             if a.get("rules").and_then(Value::as_bool) == Some(false) {
                 args.push("--no-rules".into());
@@ -302,9 +308,14 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             Ok(json!({"passed": out.status.success(), "output": String::from_utf8_lossy(&out.stdout)}))
         }
         "tidy_dupes" => {
-            let mut args =
-                vec!["dupes".to_string(), "--json".to_string(), "--min-size".to_string(), s(a, "min_size").unwrap_or("1MB").to_string()];
-            args.extend(strs(a, "paths"));
+            let paths = agent_paths(a)?;
+            let min = s(a, "min_size").unwrap_or("1MB");
+            if tidy_scan::fmt::parse_bytes(min).is_none() {
+                anyhow::bail!("invalid min_size `{min}`");
+            }
+            // `--min-size=X` binds the value, so it can't be read as a flag.
+            let mut args = vec!["dupes".to_string(), "--json".to_string(), format!("--min-size={min}"), "--".to_string()];
+            args.extend(paths);
             run_self(&args)
         }
         _ => anyhow::bail!("unknown tool `{name}`"),
@@ -441,6 +452,10 @@ mod tests {
         assert!(f.exists());
         // flags can't be smuggled in as paths
         assert!(call("tidy_plan", &json!({"paths": ["--autonomous", "/tmp"]})).is_err());
+        assert!(call("tidy_dupes", &json!({"paths": ["--plan"]})).unwrap_err().to_string().contains("invalid path"));
+        assert!(
+            call("tidy_dupes", &json!({"paths": ["/tmp"], "min_size": "--plan"})).unwrap_err().to_string().contains("invalid min_size")
+        );
         assert!(call("tidy_apply", &json!({"plan": "/tmp/evil.jsonl"})).is_err());
         // guards apply to proposals too
         let v = call("tidy_propose", &json!({"actions": [{"action": "delete", "path": "/usr/bin", "reason": "x"}]})).unwrap();

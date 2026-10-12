@@ -126,7 +126,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 
 - **Tools:** `tidy_scan`, `tidy_top`, `tidy_explain`, `tidy_plan`, `tidy_propose`, `tidy_plans`, `tidy_show_plan`, `tidy_reject`, `tidy_apply`, `tidy_undo`, `tidy_policy_test`, `tidy_dupes`.
 - **Agents propose and reject; they never approve.** `tidy_apply` runs only entries with `approved_by` set to `human` or `policy`.
-- **Flag injection:** plans are addressed by id only. `tidy_plan` rejects paths that start with `-` and passes them after `--`. `tidy_dupes` does not yet do either (see [assessment.md](assessment.md)).
+- **No flag injection.** Plans are addressed by id only. Tools that start a subprocess (`tidy_plan`, `tidy_dupes`) reject paths that start with `-` and pass the rest after `--`; `tidy_dupes` also validates `min_size` and binds it as `--min-size=…`.
 
 ## 5. Subsystems
 
@@ -153,7 +153,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
   - `unique_in` handles name conflicts.
   - `free_bytes`.
 - **Trash:** `~/.Trash` on macOS. On Linux, the XDG trash spec: `.trashinfo` files, home trash or a sticky `$topdir/.Trash`, chosen by checking the device of the nearest existing ancestor.
-- **Quarantine:** Tidy's own holding area on the same volume (`<data>/quarantine`, or `<volume>/.tidy-quarantine/<uid>` on other volumes), bucketed per plan and entry. `tidy purge` empties `<data>/quarantine` only; buckets on other volumes are not purged yet.
+- **Quarantine:** Tidy's own holding area on the same volume (`<data>/quarantine`, or `<volume>/.tidy-quarantine/<uid>` on other volumes), bucketed per plan and entry. Roots on other volumes are recorded in `<data>/quarantine-roots` when first used, so `tidy purge` empties every root without probing mounts; volumes that aren't mounted are skipped.
 - **Probes:**
   - open files (`lsof` on macOS, `/proc` on Linux)
   - git state (dirty, unpushed and stashed work; whether a path is ignored)
@@ -180,7 +180,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 
 ### 5.4 Rules (`tidy-rules`)
 
-**L0 guards**, checked in this order. Rows marked ✱ apply only to *changing* actions (delete, trash, quarantine, move, rename, archive, dedupe); tag, copy and compress skip them.
+**L0 guards**, checked in this order. Rows marked ✱ apply only to actions that move, remove or rewrite the item (delete, trash, quarantine, move, rename, archive, dedupe, compress); tag and copy skip them.
 
 | # | Guard | Blocks |
 |---|---|---|
@@ -195,7 +195,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 | 9 | cloud | cloud-synced folders (unless allowed); dataless placeholders |
 | 10 | immutable | locked or immutable files |
 | 11 | mount ✱ | directories containing mount points |
-| 12 | recent ✱ | removals newer than `min_age` (7 days); moves and renames newer than a settle time (120 s) |
+| 12 | recent ✱ | removals and in-place rewrites (dedupe, compress) newer than `min_age` (7 days); moves and renames newer than a settle time (120 s) |
 | 13 | open ✱ | files that are open |
 | 14 | git ✱ | tracked or not-ignored files; repos with uncommitted, unpushed or stashed work, no upstream, or unreadable state |
 
@@ -274,6 +274,7 @@ There is no async runtime: network I/O is the only blocking wait that matters, a
 | Plans | `<data>/plans/<id>.jsonl` | `TIDY_HOME` |
 | Journal | `<data>/journal/` | `TIDY_HOME` |
 | Quarantine | `<data>/quarantine/<plan>/<entry>/`, or `<volume>/.tidy-quarantine/<uid>` | `TIDY_HOME` |
+| Quarantine roots on other volumes | `<data>/quarantine-roots` | `TIDY_HOME` |
 | Decision cache | `<data>/decisions/<judge-hash>.jsonl` | `TIDY_HOME` |
 | Snapshots | `<cache>/snapshots/<root-hash>/` | `TIDY_CACHE_DIR`, `XDG_CACHE_HOME` |
 
@@ -364,6 +365,7 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
   - L2 semantics with scripted judges
   - presets end to end
   - MCP approval enforcement
+- `scripts/install.sh` runs `cargo install` (tuned for the CPU unless `--portable`) and checks that `tidy` on PATH is this binary, not macOS's `/usr/bin/tidy` (HTML Tidy).
 - `scripts/check-macos.sh` type-checks the macOS code paths from Linux (`aarch64-apple-darwin`) with a stub C compiler.
 - `bench/run.sh` compares `tidy scan` with du, dust, dua and gdu using hyperfine on `tidy-fixture` trees. Results are in `bench/results-linux-x86_64.md`.
 - Live checks (`tidy policy test`, `tidy bench judges`) run against the real judge and are cached.

@@ -105,10 +105,19 @@ impl Action {
     pub fn exclusive(self) -> bool {
         !matches!(self, Action::Tag | Action::Copy)
     }
+    /// Changes, moves or removes the item at its path. Dedupe and compress
+    /// count: both swap a new file in place of the old one.
     pub fn destructive(self) -> bool {
         matches!(
             self,
-            Action::Delete | Action::Trash | Action::Quarantine | Action::Move | Action::Rename | Action::Archive | Action::Dedupe
+            Action::Delete
+                | Action::Trash
+                | Action::Quarantine
+                | Action::Move
+                | Action::Rename
+                | Action::Archive
+                | Action::Dedupe
+                | Action::Compress
         )
     }
 }

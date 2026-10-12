@@ -12,9 +12,9 @@ use tidy_scan::path::home_dir;
 
 #[derive(Clone, Debug)]
 pub struct GuardConfig {
-    /// Removal-type actions (delete, trash, quarantine, archive, dedupe)
-    /// require the newest file under the path to be at least this old
-    /// (seconds). Rules may ask for more, never less.
+    /// Removals and in-place rewrites (delete, trash, quarantine, archive,
+    /// dedupe, compress) require the newest file under the path to be at
+    /// least this old (seconds). Rules may ask for more, never less.
     pub min_age: i64,
     /// Organising actions (move, rename, copy) only wait for the item to
     /// settle (finished downloading/writing).
@@ -358,8 +358,11 @@ impl Guards {
             return block("mount", format!("{} is a mount point inside it", m.display()));
         }
         // age
-        let removal = matches!(action, Action::Delete | Action::Trash | Action::Quarantine | Action::Archive | Action::Dedupe);
-        let floor = if removal { self.cfg.min_age } else { self.cfg.settle };
+        // Removals and in-place rewrites need the item cold; organising only
+        // needs it to have settled.
+        let cold =
+            matches!(action, Action::Delete | Action::Trash | Action::Quarantine | Action::Archive | Action::Dedupe | Action::Compress);
+        let floor = if cold { self.cfg.min_age } else { self.cfg.settle };
         let min_age = facts.min_age.unwrap_or(0).max(floor);
         if let Some(m) = facts.mtime_max {
             let age = tidy_scan::fmt::now_secs() - m;
@@ -474,6 +477,8 @@ mod tests {
         // app data: blocked unless regenerable
         let p = home.join("Library/Application Support/Foo/Cache");
         assert_eq!(g.check(&p, Action::Delete, &old(), Some(&[])).unwrap_err().guard, "app-data");
+        // compressing live app data in place is blocked too
+        assert_eq!(g.check(&p, Action::Compress, &old(), Some(&[])).unwrap_err().guard, "app-data");
     }
 
     #[test]
@@ -485,6 +490,21 @@ mod tests {
         let now = Facts { mtime_max: Some(tidy_scan::fmt::now_secs()), ..Default::default() };
         assert_eq!(g.check(&f, Action::Trash, &now, Some(&[])).unwrap_err().guard, "recent");
         assert!(g.check(&f, Action::Tag, &now, Some(&[])).is_ok());
+        // compress swaps the file in place: it needs the item cold, like a removal
+        let a_day = Facts { mtime_max: Some(tidy_scan::fmt::now_secs() - 86_400), ..Default::default() };
+        assert_eq!(g.check(&f, Action::Compress, &a_day, Some(&[])).unwrap_err().guard, "recent");
+        assert!(g.check(&f, Action::Move, &a_day, Some(&[])).is_ok());
+        assert!(g.check(&f, Action::Compress, &old(), Some(&[])).is_ok());
+        // ... and never while another process has it open
+        if let Ok(mut child) = std::process::Command::new("sleep").arg("10").stdin(std::fs::File::open(&f).unwrap()).spawn() {
+            let g2 = Guards::new(GuardConfig::default());
+            let r = g2.check(&f, Action::Compress, &old(), Some(&[]));
+            let _ = child.kill();
+            let _ = child.wait();
+            if cfg!(target_os = "linux") || g2.open_files().available {
+                assert_eq!(r.unwrap_err().guard, "open");
+            }
+        }
 
         // a repo with uncommitted work inside the candidate
         let repo = t.path().join("proj");

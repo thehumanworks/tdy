@@ -8,14 +8,16 @@ Analyse, clean up, compress and organise the files on your disk — fast, frugal
 - **Space without deleting.** Duplicates become copy-on-write clones (APFS `clonefile`, btrfs/xfs `FIDEDUPERANGE`). Cold folders get archived or transparently compressed.
 - **Agent-ready.** NDJSON/JSON output on the main commands, plus an MCP server where agents can propose but never approve.
 
-## Build
+## Install
 
 ```sh
-cargo build --release                      # binary: target/release/tidy
-RUSTFLAGS="-C target-cpu=native" cargo build --release   # personal builds
+scripts/install.sh               # cargo install, tuned for this CPU; then checks which `tidy` your shell finds
+scripts/install.sh --portable    # the same without -C target-cpu=native
 ```
 
-Requires Rust 1.88+. The release profile uses fat LTO, one codegen unit and `panic = "abort"`.
+**macOS:** the system ships an unrelated HTML Tidy at `/usr/bin/tidy`. If `tidy --help` prints `Config: unknown option: help`, that one comes first on your PATH. Put `~/.cargo/bin` before `/usr/bin` (the installer prints the line to add) and check with `which -a tidy`.
+
+To build without installing: `cargo build --release` (binary at `target/release/tidy`). Requires Rust 1.88+. The release profile uses fat LTO, one codegen unit and `panic = "abort"`.
 
 ## Quick start
 
@@ -170,8 +172,10 @@ Built-in rule packs. All are off until you list them in `presets = [...]`.
 ## Agents (MCP)
 
 ```sh
-claude mcp add tidy -- tidy mcp          # Claude Code; any MCP client works
+claude mcp add tidy -- ~/.cargo/bin/tidy mcp   # Claude Code; any MCP client works
 ```
+
+Use the absolute path: an MCP client may start the server with a PATH where macOS's `/usr/bin/tidy` comes first.
 
 **Tools:** `tidy_scan`, `tidy_top`, `tidy_explain`, `tidy_plan`, `tidy_propose`, `tidy_plans`, `tidy_show_plan`, `tidy_reject`, `tidy_apply`, `tidy_undo`, `tidy_policy_test`, `tidy_dupes`.
 

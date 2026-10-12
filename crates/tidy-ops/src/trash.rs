@@ -218,7 +218,11 @@ pub fn quarantine_slot(p: &Path, plan: &str, entry: &str, create: bool) -> io::R
     } else {
         let root = mount_root(p.parent().unwrap_or(p))?;
         let uid = unsafe { libc::getuid() };
-        root.join(".tidy-quarantine").join(uid.to_string())
+        let base = root.join(".tidy-quarantine").join(uid.to_string());
+        if create {
+            register_quarantine_root(&base)?;
+        }
+        base
     };
     let dir = base.join(plan).join(entry);
     if create {
@@ -227,14 +231,52 @@ pub fn quarantine_slot(p: &Path, plan: &str, entry: &str, create: bool) -> io::R
     Ok(dir.join(name))
 }
 
-/// Quarantine buckets (plan dirs) older than `max_age_secs`, with sizes.
+/// Registry of quarantine roots on other volumes, so `purge` finds them
+/// without probing every mount (which could wake automounts or hang on a
+/// dead network share).
+fn quarantine_roots_file() -> PathBuf {
+    crate::dirs::data_dir().join("quarantine-roots")
+}
+
+/// Remember a quarantine root on another volume (idempotent).
+pub fn register_quarantine_root(base: &Path) -> io::Result<()> {
+    use std::io::Write;
+    if quarantine_roots().iter().any(|r| r == base) {
+        return Ok(());
+    }
+    create_private_dir(&crate::dirs::data_dir())?;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(quarantine_roots_file())?;
+    f.write_all(base.as_os_str().as_encoded_bytes())?;
+    f.write_all(b"\n")?;
+    f.sync_all()
+}
+
+/// Every quarantine root: the data dir's, then registered ones on other volumes.
+pub fn quarantine_roots() -> Vec<PathBuf> {
+    let mut out = vec![crate::dirs::quarantine_dir()];
+    if let Ok(text) = std::fs::read(quarantine_roots_file()) {
+        for line in text.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+            let p = tidy_scan::path::bytes_to_path(line);
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Quarantine buckets (plan dirs) in every root, with their mtimes. Roots on
+/// volumes that aren't mounted right now are skipped.
 pub fn quarantine_buckets() -> io::Result<Vec<(PathBuf, i64)>> {
-    let qd = crate::dirs::quarantine_dir();
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(&qd) else { return Ok(out) };
-    for e in rd.flatten() {
-        if let Ok(md) = e.metadata() {
-            out.push((e.path(), md.mtime()));
+    for qd in quarantine_roots() {
+        let Ok(rd) = std::fs::read_dir(&qd) else { continue };
+        for e in rd.flatten() {
+            if let Ok(md) = e.metadata() // DirEntry::metadata does not follow symlinks
+                && md.is_dir()
+            {
+                out.push((e.path(), md.mtime()));
+            }
         }
     }
     Ok(out)
@@ -255,6 +297,18 @@ mod tests {
         assert_eq!(std::fs::read(&q).unwrap(), b"data");
         rename_noreplace(&q, &f).unwrap();
         assert!(f.exists());
+        // buckets on other volumes are found through the registry
+        let other = t.path().join("vol/.tidy-quarantine/501");
+        std::fs::create_dir_all(other.join("plan2/e1")).unwrap();
+        register_quarantine_root(&other).unwrap();
+        register_quarantine_root(&other).unwrap();
+        assert_eq!(quarantine_roots().iter().filter(|r| **r == other).count(), 1, "registered once");
+        let buckets: Vec<PathBuf> = quarantine_buckets().unwrap().into_iter().map(|b| b.0).collect();
+        assert!(buckets.contains(&other.join("plan2")), "{buckets:?}");
+        assert!(buckets.contains(&crate::dirs::quarantine_dir().join("plan1")), "{buckets:?}");
+        // an unmounted volume is skipped, not an error
+        register_quarantine_root(&t.path().join("gone/.tidy-quarantine/501")).unwrap();
+        assert_eq!(quarantine_buckets().unwrap().len(), 2);
     }
 
     #[cfg(not(target_os = "macos"))]

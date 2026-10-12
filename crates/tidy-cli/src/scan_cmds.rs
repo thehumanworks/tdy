@@ -31,7 +31,7 @@ pub struct ScanArgs {
 impl ScanArgs {
     pub fn options(&self, top_k: usize) -> ScanOptions {
         let private = self.private || self.by == SizeKind::Private;
-        ScanOptions { threads: self.threads, cross_mounts: self.cross_mounts, private, top_k, top_by: self.by }
+        ScanOptions { threads: self.threads, cross_mounts: self.cross_mounts, private, top_k, top_by: self.by, progress: None }
     }
     pub fn root(&self) -> PathBuf {
         path::expand_tilde(&self.path)

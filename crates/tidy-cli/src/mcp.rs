@@ -333,12 +333,9 @@ fn run_self(args: &[String]) -> Result<Value> {
 }
 
 fn propose(a: &Value) -> Result<Value> {
+    use crate::propose::{By, Proposal};
     let actions = a.get("actions").and_then(Value::as_array).cloned().unwrap_or_default();
-    let (policy, hash, ppath) = crate::plan_cmds::load_policy(None)?;
-    let guards = Guards::new(policy.guard_config());
-    let mut plan = Plan { header: tidy_rules::planner::new_header(vec![], Mode::Manual, ppath, hash, None), entries: vec![] };
-    plan.header.note = Some("proposed by agent".into());
-    let mut taken = HashSet::new();
+    let mut items = Vec::new();
     let mut rejected = Vec::new();
     for act in actions {
         let path_s = s(&act, "path").unwrap_or("");
@@ -353,50 +350,20 @@ fn propose(a: &Value) -> Result<Value> {
                 continue;
             }
         };
-        if matches!(action, Action::Dedupe | Action::Compress) {
-            rejected.push(json!({"path": path, "why": "use tidy_dupes / the CLI for dedupe and compression"}));
-            continue;
-        }
-        let dest = s(&act, "dest").map(expand_tilde);
-        if matches!(action, Action::Move | Action::Copy | Action::Rename) && dest.is_none() {
-            rejected.push(json!({"path": path, "why": "needs dest"}));
-            continue;
-        }
-        let Ok(fp) = tidy_ops::fingerprint(&path, None, false) else { continue };
-        let facts = Facts { mtime_max: Some(fp.mtime), flags: 0, regenerable: false, min_age: None };
-        if let Err(b) = guards.check(&path, action, &facts, None) {
-            rejected.push(json!({"path": path, "why": b.to_string()}));
-            continue;
-        }
-        let id = entry_id(&path, action, &taken);
-        taken.insert(id.clone());
-        let (logical, alloc) = (fp.size, fp.size);
-        plan.entries.push(Entry {
-            id,
-            status: Status::Pending,
-            approved_by: None,
+        items.push(Proposal {
             action,
-            path: path.clone(),
-            dest,
-            create_dest: true,
-            on_conflict: OnConflict::Suffix,
+            path,
+            dest: s(&act, "dest").map(expand_tilde),
             tags: strs(&act, "tags"),
-            bytes: Bytes { logical, alloc, private: alloc },
-            fingerprint: fp,
-            source: Source { layer: Layer::User, rule: "agent".into(), p: None },
             reason: s(&act, "reason").unwrap_or("proposed by agent").to_string(),
-            undo: if action == Action::Delete { Undo::None } else { Undo::Restore },
-            alternatives: vec![],
-            evidence: None,
-            outcome: None,
+            bytes: None,
         });
     }
-    if plan.entries.is_empty() {
+    let out = crate::propose::propose(items, By::Agent, "proposed by agent")?;
+    rejected.extend(out.rejected.into_iter().map(|(p, why)| json!({"path": p, "why": why})));
+    let Some(plan) = out.plan else {
         return Ok(json!({"plan": null, "rejected": rejected}));
-    }
-    plan.header.roots =
-        plan.entries.iter().filter_map(|e| e.path.parent().map(|p| p.to_path_buf())).collect::<HashSet<_>>().into_iter().collect();
-    store::save(&plan)?;
+    };
     Ok(json!({"plan": plan.header.id, "entries": plan.entries.iter().map(compact).collect::<Vec<_>>(), "rejected": rejected,
               "next": format!("Ask the user to review and approve: `tidy review {}`", plan.header.id), "reclaimable": fmt::bytes(plan.counts().reclaimable)}))
 }
@@ -407,6 +374,7 @@ mod tests {
 
     #[test]
     fn agents_cannot_apply_unapproved_entries() {
+        let _lock = crate::TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let t = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("TIDY_HOME", t.path().join("state"));

@@ -150,7 +150,9 @@ pub fn git_state(root: &Path) -> Option<GitState> {
 
 /// Whether `p` is ignored by the repository at `root` (`git check-ignore`).
 pub fn git_ignored(root: &Path, p: &Path) -> bool {
-    Command::new("git").arg("-C").arg(root).args(["check-ignore", "-q", "--"]).arg(p).status().map(|s| s.success()).unwrap_or(false)
+    // `.output()`: no inherited stdio, so git's warnings (e.g. "dubious
+    // ownership") never land on the terminal, including inside `tidy ui`.
+    Command::new("git").arg("-C").arg(root).args(["check-ignore", "-q", "--"]).arg(p).output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Directories synced by cloud providers, where deleting locally deletes remotely.

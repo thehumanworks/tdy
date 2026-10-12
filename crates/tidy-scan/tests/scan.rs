@@ -121,6 +121,22 @@ fn paths_lookup_children_and_top_files() {
 }
 
 #[test]
+fn progress_counts_and_cancel() {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    let t = fixture();
+    let p = Arc::new(tidy_scan::ScanProgress::default());
+    let idx = scan(t.path(), &ScanOptions { progress: Some(p.clone()), ..Default::default() }).unwrap();
+    assert_eq!(p.dirs.load(Ordering::Relaxed), idx.nodes.len() as u64);
+    assert_eq!(p.files.load(Ordering::Relaxed), idx.root_node().files);
+    // a cancelled scan stops and says so
+    let c = Arc::new(tidy_scan::ScanProgress::default());
+    c.cancel.store(true, Ordering::Relaxed);
+    let r = scan(t.path(), &ScanOptions { progress: Some(c), ..Default::default() });
+    assert!(matches!(r, Err(tidy_scan::ScanError::Cancelled)));
+}
+
+#[test]
 fn snapshot_roundtrip_and_diff() {
     let t = fixture();
     let idx = scan(t.path(), &ScanOptions::default()).unwrap();

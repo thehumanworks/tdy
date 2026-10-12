@@ -1,5 +1,6 @@
-//! Linux reader: `openat` + `getdents64` + `statx` relative to the open
-//! directory fd, so the kernel never re-resolves the full path per file.
+//! Linux reader: `open(O_DIRECTORY)` + `getdents64` + `statx` relative to
+//! the open directory fd, so the kernel never re-resolves the full path per
+//! file.
 
 use crate::entry::{EntryInfo, Kind, ReadOptions, flags};
 use std::ffi::CStr;

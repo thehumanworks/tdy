@@ -160,7 +160,7 @@ pub enum Layer {
     User,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Bytes {
     pub logical: u64,
     pub alloc: u64,

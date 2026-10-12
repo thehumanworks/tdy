@@ -81,6 +81,7 @@ programs.tidy = {
 ## Quick start
 
 ```sh
+tidy                           # interactive UI in a terminal (same as `tidy ui .`)
 tidy scan ~                    # where the space goes (dust-style tree)
 tidy top ~ -n 20               # largest files   (--dirs: by bytes held directly)
 tidy plan ~                    # detectors + your policy rules → a plan
@@ -92,10 +93,23 @@ tidy undo                      # reverse what can be reversed
 
 `latest` is the default plan for `review`, `apply`, `undo` and `show`. You can also pass a plan id or a unique prefix.
 
+## Interactive UI
+
+`tidy ui [PATH]` opens a full-screen app; so does plain `tidy` in a terminal. It has three screens: switch with `1` `2` `3` or Tab, and `?` lists the keys on each.
+
+| Screen | What you do there |
+|---|---|
+| **Explore** | Browse where the space goes, sorted by size, name, age or item count. Folders come from the scan; files are read when you open their folder. Detectors tag build output and caches. `i` shows sizes and guard verdicts; `E` asks your policy rules. Mark items with space; `t` or `z` turns them into a trash or quarantine plan, approved by you. |
+| **Plans** | Review any plan: approve, reject, filter, details. `X` applies it after a dry run and your confirmation; `U` undoes it. A log shows each step. |
+| **Cleanup** | Pick a folder and run detectors and policy rules, with live progress (files scanned, items judged, cost). The result opens as a plan. |
+
+Nothing changes on disk until you confirm an apply, which uses the same guards, fingerprint checks and journal as `tidy apply`. Scans, judging and applies run in the background, so the screen stays responsive, and a dialog from a finished job never replaces one you have open.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `ui [PATH]` | The interactive UI (also plain `tidy` in a terminal) |
 | `scan`, `top`, `diff` | Size tree, largest files/dirs, changes since the last `scan --save` |
 | `plan [PATHS]` | L1 detectors + L2 policy rules → plan (`--no-rules`, `--no-detectors`, `--show-blocked`) |
 | `plans`, `show` | List plans; print entries (filters: `--rule`, `--action`, `--status`, `--min-p`, `--under`) |
@@ -274,6 +288,6 @@ scripts/check-macos.sh        # type-check the macOS paths from Linux
 bench/run.sh                  # needs hyperfine (+ du/dust/dua/gdu if you want them compared)
 ```
 
-Code map: `tidy-scan` (readers, walker, index, snapshots), `tidy-ops` (fingerprints, trash/quarantine, safe fs ops, dupes/archive/compress, probes), `tidy-plan` (plan model, journal, apply/undo/recover, review), `tidy-rules` (guards, detectors, policy, L2 engine, media), `tidy-judge` (OpenAI Decisions, SystemOne, cache, cascade), `tidy-cli` (CLI, TUI, watch, MCP), `tidy-bench` (fixtures).
+Code map: `tidy-scan` (readers, walker, index, snapshots), `tidy-ops` (fingerprints, trash/quarantine, safe fs ops, dupes/archive/compress, probes), `tidy-plan` (plan model, journal, apply/undo/recover, review), `tidy-rules` (guards, detectors, policy, L2 engine, media), `tidy-judge` (OpenAI Decisions, SystemOne, cache, cascade), `tidy-cli` (CLI, interactive UI, watch, MCP), `tidy-bench` (fixtures).
 
 Docs: [architecture](docs/architecture.md) (goal, design, dependencies), [assessment](docs/assessment.md) (strengths, weaknesses, future ideas), [design spec](docs/design.md) (original spec and build decisions).

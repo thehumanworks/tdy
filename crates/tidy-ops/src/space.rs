@@ -305,10 +305,10 @@ pub fn transparent_compress(p: &Path) -> io::Result<()> {
         let tmp = p.with_file_name(format!(".{}.tidy-compress", p.file_name().unwrap_or_default().to_string_lossy()));
         let _ = crate::fsops::remove_tree(&tmp);
         let before = crate::fingerprint::fingerprint(p, None, true)?;
-        let ok = std::process::Command::new("ditto").arg("--hfsCompression").arg(p).arg(&tmp).status()?.success();
-        if !ok {
+        let out = std::process::Command::new("ditto").arg("--hfsCompression").arg(p).arg(&tmp).output()?;
+        if !out.status.success() {
             let _ = crate::fsops::remove_tree(&tmp);
-            return Err(io::Error::other("ditto --hfsCompression failed"));
+            return Err(io::Error::other(format!("ditto --hfsCompression failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
         }
         // Abort if the original changed while ditto copied it (writes would be lost).
         let after = crate::fingerprint::fingerprint(p, None, true)?;
@@ -321,8 +321,12 @@ pub fn transparent_compress(p: &Path) -> io::Result<()> {
         return crate::fsops::remove_tree(&tmp);
     }
     if fs_is_btrfs(p) {
-        let ok = std::process::Command::new("btrfs").args(["filesystem", "defragment", "-r", "-czstd"]).arg(p).status()?.success();
-        return if ok { Ok(()) } else { Err(io::Error::other("btrfs defragment failed")) };
+        let out = std::process::Command::new("btrfs").args(["filesystem", "defragment", "-r", "-czstd"]).arg(p).output()?;
+        return if out.status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("btrfs defragment failed: {}", String::from_utf8_lossy(&out.stderr).trim())))
+        };
     }
     Err(io::Error::other("transparent compression needs APFS or btrfs (use archive instead)"))
 }

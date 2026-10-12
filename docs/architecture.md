@@ -32,7 +32,7 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 
 ```
                          ┌────────────────────────────────────────────┐
-  you / scripts ───────► │ tidy-cli  CLI · review TUI · $EDITOR review │ ◄──── agents (MCP, stdio)
+  you / scripts ───────► │ tidy-cli  CLI · `tidy ui` · $EDITOR review  │ ◄──── agents (MCP, stdio)
                          │           watch · MCP server · output       │
                          └──────┬───────────────┬─────────────────────┘
                                 │               │
@@ -67,10 +67,10 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 | `tidy-plan` | Plan model (JSONL), store, fsync'd journal, apply / undo / crash recovery, review helpers | scan, ops | 1,478 / 360 |
 | `tidy-judge` | Provider-neutral question IR, OpenAI and SystemOne backends, mock, persistent cache, cascade, HTTP with adaptive concurrency | — | 1,129 / — |
 | `tidy-rules` | L0 guards, L1 detectors, policy file and presets, L2 engine, item evidence, rule checks, EXIF and thumbnails, calibration, planner | scan, ops, plan, judge | 3,690 / 463 |
-| `tidy-cli` | The `tidy` binary: commands, ratatui review TUI, `$EDITOR` review, watch mode, MCP server | all of the above | 3,126 / — |
+| `tidy-cli` | The `tidy` binary: commands, the interactive UI (`tidy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 5,887 / — |
 | `tidy-bench` | `tidy-fixture`: deterministic trees for benchmarks | — | 138 / — |
 
-That is about 13,200 lines of Rust plus about 1,000 lines of integration tests. There are 44 tests in total; unit tests live next to the code.
+That is about 16,000 lines of Rust plus about 1,000 lines of integration tests. There are 50 tests in total; unit tests live next to the code.
 
 ## 4. Data flow
 
@@ -119,6 +119,18 @@ recover  on the next apply/undo: reconcile journal + filesystem; never delete a 
 ### Watch mode (`tidy watch`)
 
 `notify` (FSEvents on macOS, inotify on Linux) watches the scopes of the action rules, recursively. Each changed path must stay unchanged for `--settle` seconds (default 2). Partial downloads (`.crdownload`, `.part`, `.download`, …), dotfiles and `node_modules` are ignored. Settled paths go through the same L2 engine and are appended to a watch plan. In autonomous mode, entries the policy approved are applied straight away, with the full minimum age still enforced for removals. Measured latency from arrival to plan entry is 2.1–2.6 s.
+
+### Interactive UI (`tidy ui`)
+
+`tidy ui [PATH]`, or plain `tidy` in a terminal, runs a ratatui app with three screens:
+
+- **Explore** browses the directory index, sorted by size, name, age or item count. Folders and their totals come from the scan; the files of the folder on screen are read on demand, so memory stays proportional to folders. Each folder found by the detectors carries a detector tag. The details panel shows guard verdicts, computed from the scan's data so there is no second walk. Marked items become a trash or quarantine plan through the same code as MCP proposals (`propose.rs`), but approved by the human.
+- **Plans** reuses the review component of `tidy review` (`tui.rs`, saving after each change). Apply always runs a dry run first, shows the result, and waits for `y`. Undo also asks first.
+- **Cleanup** runs `plan_detectors` and `policy_entries` on one folder and shows scan and judge progress as they happen.
+
+Scans, explanations, rule evaluation, proposals, cleanups, applies and undos each run on a worker thread and report over a channel (`app/worker.rs`). The screen redraws every 100 ms while work runs, and every 500 ms otherwise. Scans can be cancelled through `ScanProgress`.
+
+Dialogs queue: one never replaces another. Dialogs from finished jobs wait until no text is being typed, then ignore keys for 400 ms, so a stray keystroke can't confirm an apply. Edits to a plan are refused while a job runs on it. Child processes run with captured output, so they never draw over the screen.
 
 ### Agents (`tidy mcp`)
 
@@ -243,6 +255,7 @@ Move destinations get their own check: never into system, credential, app-data o
 
 | Area | Commands |
 |---|---|
+| Interactive | `ui [PATH]`, or plain `tidy` in a terminal |
 | Analyse | `scan`, `top`, `diff` |
 | Plans | `plan`, `plans`, `show`, `review`, `apply`, `undo`, `explain`, `purge` |
 | Space | `dupes [--plan]`, `archive [--transparent]` |
@@ -262,6 +275,7 @@ Move destinations get their own check: never into system, credential, app-data o
 | BLAKE3 | multithreaded (`rayon` feature) and memory-mapped for large files |
 | zstd archives | multithreaded (`zstdmt`) |
 | Watch | one `notify` watcher thread plus the main loop |
+| `tidy ui` | the UI thread draws and handles keys; each job (scan, explain, rules, propose, cleanup, apply, undo) gets its own thread and reports over a channel |
 
 There is no async runtime: network I/O is the only blocking wait that matters, and threads handle it well at this scale. Memory is bounded by the directory count (64 B per directory plus names) and the top-K heaps, not by the file count.
 
@@ -326,7 +340,7 @@ There is no async runtime: network I/O is the only blocking wait that matters, a
 | `jpeg-decoder` | 0.3 | rules | DCT-scaled JPEG decode (fast thumbnails) |
 | `crc32fast` | 1 | rules | Zip CRC check (`extracted-sibling`) |
 | `clap` | 4.6 | cli, bench | Command line |
-| `ratatui`, `crossterm` | 0.30, 0.29 | cli | Review TUI |
+| `ratatui`, `crossterm` | 0.30, 0.29 | cli | `tidy ui` and `tidy review` |
 | `notify` | 8 | cli | FSEvents and inotify for `watch` |
 | `memmap2` | 0.9 | workspace | Declared for snapshot mapping but not used directly; linked through `blake3`'s `mmap` feature |
 | `tempfile` | 3 | dev | Test sandboxes |
@@ -357,7 +371,7 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
 
 ## 10. Testing and tooling
 
-- `cargo test` runs 44 tests:
+- `cargo test` runs 50 tests:
   - scanner (totals against a reference walk and `du`, lookups and top files, snapshot round-trip and diff)
   - filesystem ops (trash and quarantine round-trips, symlink safety, mount listing, drift detection, dupes and archives, bplist and tags)
   - plans (10 tests: apply/undo round-trips, stale entries, crash recovery including an interrupted cross-volume move, dry runs, the editor format)
@@ -365,6 +379,7 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
   - L2 semantics with scripted judges
   - presets end to end
   - MCP approval enforcement
+  - the interactive UI, headless (ratatui test backend): browse, mark, plan, dry run, apply, undo, cleanup, dialog queueing and keystroke safety, non-UTF-8 names
 - `flake.nix` packages Tidy for Nix (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`) and provides an overlay, a NixOS/nix-darwin module, a home-manager module (policy written and checked at build time, `tidy watch` as a systemd or launchd user service) and a dev shell. `nix flake check` builds the package, runs the tests in the build sandbox, and checks Rust and Nix formatting. Files are in `nix/`.
 - `scripts/install.sh` runs `cargo install` (tuned for the CPU unless `--portable`) and checks that `tidy` on PATH is this binary, not macOS's `/usr/bin/tidy` (HTML Tidy).
 - `scripts/check-macos.sh` type-checks the macOS code paths from Linux (`aarch64-apple-darwin`) with a stub C compiler.

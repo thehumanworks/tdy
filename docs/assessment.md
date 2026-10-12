@@ -45,6 +45,8 @@ An honest look at v0.1 (October 2026). Numbers come from the benchmark and live 
 - **Staleness detection.** Fingerprints, guards and rule checks are re-run at apply time, so a plan made yesterday can't act on something that changed since.
 - **Agent-safe.** Over MCP, agents can propose and reject but never approve (`approved_by` provenance). Plans are addressed by id, and `tidy_plan` paths can't carry flags.
 
+- **An interactive UI with the same rules.** `tidy ui` creates and applies plans through the same guards, fingerprint checks and journal. Every apply shows a dry run first and waits for confirmation, and background results can't hijack a keystroke.
+
 ### Smart without being expensive
 - **Rules in plain English**, for organising (move, copy, rename, tag, `pick_from` among your folders), not just deleting.
 - **Cost-aware engine.**
@@ -74,7 +76,7 @@ Ranked by impact on you today.
 | 9 | **Apply is sequential.** One entry at a time, rewriting the whole plan every 64 entries. Fine for hundreds of entries; slow for 100k dedupes. | Low–medium | `exec::apply` |
 | 10 | **Watch mode limits.** It runs in the foreground, with no launchd or systemd unit. Changes made while it isn't running are missed (no FSEvents event-id resume). Linux inotify needs one watch per directory. | Medium for autonomous use | `watch.rs` |
 | 11 | **Presets are English and default-path only.** Localised macOS screenshot names and custom capture folders aren't recognised. `installers` includes `.zip` and relies on the model to tell app zips from personal archives. | Low–medium | `presets.rs` |
-| 12 | **Thin CLI test coverage.** `tidy-cli` has one test (MCP approval). `policy test`, `calibrate`, `watch` and the TUI were only checked by hand or in live runs. Parsers for untrusted input (zip central directory, bplist, `getattrlistbulk` buffers) are bounds-checked but not fuzzed. | Medium | 44 tests in total; 1 in `tidy-cli` |
+| 12 | **Thin CLI test coverage.** `tidy-cli` has tests for MCP approval and the interactive UI only. `policy test`, `calibrate` and `watch` were only checked by hand or in live runs. Parsers for untrusted input (zip central directory, bplist, `getattrlistbulk` buffers) are bounds-checked but not fuzzed. | Medium | 50 tests in total; 6 in `tidy-cli` |
 | 13 | **Hard-coded judge prices.** Cost estimates will drift as prices change. | Low | `price_per_mtok` |
 | 14 | **Some actions are one-way.** `delete`, `dedupe` and `compress` can't be undone. Dedupe and compress keep content identical, and `delete` is kept for regenerable artefacts. | Low | `undo ✗` in plans |
 | 15 | **Dependency weight.** 174 packages in the dependency graph (image decoders, TUI, TLS, notify), which is heavy for a "frugal" tool. `memmap2` is declared in the workspace but not used directly. | Low | `cargo tree` |
@@ -108,7 +110,10 @@ Ranked by impact on you today.
   - Redaction options: hash names, drop URLs.
 - **Media.** Video keyframes (AVFoundation or ffmpeg) so video rules see content, not just metadata.
 - **Space you can't see.** Report APFS local snapshots and purgeable space; Time Machine snapshots keep deleted bytes allocated.
-- **Review UX.** Inline thumbnails in the TUI (kitty or iTerm2 graphics), views grouped by rule, and per-entry "why" from the stored evidence.
+- **Interactive UI, next screens.**
+  - Space: duplicates and cold folders, with dedupe and archive plans.
+  - Watch: live `tidy watch` proposals.
+  - Mouse support, inline thumbnails (kitty or iTerm2 graphics), views grouped by rule, and per-entry "why" from the stored evidence.
 - **Lean builds.** Feature-gate the image decoders and the TUI; drop the direct `memmap2` declaration or use it for snapshots.
 
 ### Later

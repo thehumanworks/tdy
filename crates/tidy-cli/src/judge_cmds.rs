@@ -97,20 +97,58 @@ fn progress_bar(label: &'static str) -> impl Fn(usize, usize) + Sync {
     }
 }
 
-pub fn add_policy_entries(planned: &mut Planned, policy: &Policy, guards: &Guards) -> Result<()> {
+/// What evaluating the policy rules for a plan did.
+#[derive(Debug, Default, Clone)]
+pub struct L2Summary {
+    pub judge: Option<String>,
+    pub items: usize,
+    pub requests: usize,
+    pub cache_hits: usize,
+    pub input_tokens: u64,
+    /// Estimated input cost in USD, when the model's price is known.
+    pub cost: Option<f64>,
+    pub elapsed_ms: u64,
+    pub added: usize,
+    pub warnings: Vec<String>,
+}
+
+impl L2Summary {
+    /// One line for humans, e.g. `judge luna:… · 13 items · 9 requests (2 cached) · …`.
+    pub fn judge_line(&self) -> Option<String> {
+        let j = self.judge.as_ref()?;
+        Some(format!(
+            "judge {j} · {} items · {} requests ({} cached) · {} input tokens{} · {:.1}s",
+            self.items,
+            self.requests,
+            self.cache_hits,
+            ui::thousands(self.input_tokens),
+            self.cost.map(|c| format!(" · ≈${c:.4}")).unwrap_or_default(),
+            self.elapsed_ms as f64 / 1000.0
+        ))
+    }
+}
+
+/// Evaluate the policy rules (L2) and add their entries to the plan.
+/// `progress(done, total)` follows the judge calls. Nothing is printed.
+pub fn policy_entries(
+    planned: &mut Planned,
+    policy: &Policy,
+    guards: &Guards,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Result<L2Summary> {
     let built = build_judge(policy, false)?;
+    let mut sum = L2Summary { judge: built.as_ref().map(|b| b.id.clone()), ..Default::default() };
     for r in &policy.rules {
         if let Some(j) = &r.judge
             && Some(j) != policy.judge.default.as_ref()
         {
-            eprintln!("{}", ui::yellow(&format!("rule `{}`: per-rule judges are not supported yet; using the default judge", r.id)));
+            sum.warnings.push(format!("rule `{}`: per-rule judges are not supported yet; using the default judge", r.id));
         }
     }
     let calib = Calibration::load();
     let rules = l2::compile(policy, &planned.plan.header.roots, built.as_ref().map(|b| b.id.as_str()), &calib);
     let conc = policy.judge.concurrency.unwrap_or(32);
-    let pb = progress_bar("judging");
-    let run = l2::run(policy, &rules, built.as_ref().map(|b| b.judge.as_ref()), guards, conc, &pb)?;
+    let run = l2::run(policy, &rules, built.as_ref().map(|b| b.judge.as_ref()), guards, conc, progress)?;
     let mut taken: HashSet<String> = planned.plan.entries.iter().map(|e| e.id.clone()).collect();
     let mut es = l2::entries(&run, policy.mode, built.as_ref().map(|b| b.id.as_str()), &mut taken);
     // L1 artifacts win: drop L2 entries at or inside an L1 path.
@@ -128,35 +166,35 @@ pub fn add_policy_entries(planned: &mut Planned, policy: &Policy, guards: &Guard
     }
     let errors: Vec<&str> =
         run.outcomes.iter().filter_map(|o| if let OutcomeKind::Error(e) = &o.kind { Some(e.as_str()) } else { None }).collect();
-    if let Some(b) = &built {
-        let cost = b
-            .models
-            .first()
-            .and_then(|m| price_per_mtok(m))
-            .map(|p| format!(" · ≈${:.4}", run.input_tokens as f64 / 1e6 * p))
-            .unwrap_or_default();
-        eprintln!(
-            "{}",
-            ui::dim(&format!(
-                "judge {} · {} items · {} requests ({} cached) · {} input tokens{} · {:.1}s",
-                b.id,
-                run.outcomes.len(),
-                run.requests,
-                run.cache_hits,
-                ui::thousands(run.input_tokens),
-                cost,
-                run.elapsed_ms as f64 / 1000.0
-            ))
-        );
-        planned.plan.header.judge = Some(b.id.clone());
-    }
     if !errors.is_empty() {
-        eprintln!("{}", ui::yellow(&format!("{} item(s) could not be judged: {}", errors.len(), errors[0])));
+        sum.warnings.push(format!("{} item(s) could not be judged: {}", errors.len(), errors[0]));
     }
     if run.unjudged > 0 {
-        eprintln!("{}", ui::yellow(&unjudged_warning(run.unjudged, policy)));
+        sum.warnings.push(unjudged_warning(run.unjudged, policy));
     }
+    if let Some(b) = &built {
+        sum.cost = b.models.first().and_then(|m| price_per_mtok(m)).map(|p| run.input_tokens as f64 / 1e6 * p);
+        planned.plan.header.judge = Some(b.id.clone());
+    }
+    sum.items = run.outcomes.len();
+    sum.requests = run.requests;
+    sum.cache_hits = run.cache_hits;
+    sum.input_tokens = run.input_tokens;
+    sum.elapsed_ms = run.elapsed_ms;
+    sum.added = es.len();
     planned.plan.entries.extend(es);
+    Ok(sum)
+}
+
+/// `policy_entries` for the CLI: a progress line on stderr, then the summary.
+pub fn add_policy_entries(planned: &mut Planned, policy: &Policy, guards: &Guards) -> Result<()> {
+    let sum = policy_entries(planned, policy, guards, &progress_bar("judging"))?;
+    if let Some(line) = sum.judge_line() {
+        eprintln!("{}", ui::dim(&line));
+    }
+    for w in &sum.warnings {
+        eprintln!("{}", ui::yellow(w));
+    }
     Ok(())
 }
 
@@ -191,10 +229,21 @@ pub fn evidence_summary(v: &serde_json::Value) -> String {
     parts.join(" · ")
 }
 
-/// Explain policy rules for one path (used by `tidy explain`).
-pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
+/// How the policy rules see one path (for `tidy explain` and the TUI).
+#[derive(Debug, Clone)]
+pub struct RulesExplanation {
+    /// (rule id, probability if answered, threshold, action)
+    pub rows: Vec<(String, Option<f64>, f64, String)>,
+    pub verdict: String,
+    /// e.g. `judge luna:… · 540 ms · cached`
+    pub judge: Option<String>,
+}
+
+/// Evaluate the policy rules for one path; may call the judge (cached).
+/// `None` when no rule applies to it.
+pub fn rules_for_path(p: &Path, policy: &Policy) -> Result<Option<RulesExplanation>> {
     if policy.rules.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let calib = Calibration::load();
     let built = build_judge(policy, false).ok().flatten();
@@ -203,8 +252,7 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
     let it = item_for(p)?;
     let app: Vec<&CompiledRule> = l2::prune(rules.iter().filter(|r| r.applies(&it, now)).collect());
     if app.is_empty() {
-        println!("  L2 rules     {}", ui::dim("none apply (scope/filter)"));
-        return Ok(());
+        return Ok(None);
     }
     let media = built.as_ref().map(|b| l2::Media::load(policy, b.judge.caps()));
     let req = l2::build_request(policy, &it, &app, now, true, media.as_ref());
@@ -214,16 +262,10 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
     };
     let guards = Guards::new(policy.guard_config());
     let (kind, ps) = l2::decide(&it, &app, resp.as_ref(), &guards, now);
-    for r in &app {
-        let p = ps.iter().find(|x| x.0 == r.rule.id).map(|x| x.1);
-        println!(
-            "  L2 {:<18} p={}  τ={:.2}  {}",
-            r.rule.id,
-            p.map(|p| format!("{p:.2}")).unwrap_or("–".into()),
-            r.threshold,
-            ui::dim(&r.rule.action)
-        );
-    }
+    let rows = app
+        .iter()
+        .map(|r| (r.rule.id.clone(), ps.iter().find(|x| x.0 == r.rule.id).map(|x| x.1), r.threshold, r.rule.action.clone()))
+        .collect();
     let verdict = match kind {
         OutcomeKind::Kept { rule, p } => {
             format!("kept by {rule} ({})", p.map(|p| format!("{p:.2}")).unwrap_or("unanswered — kept to be safe".into()))
@@ -246,9 +288,25 @@ pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
         OutcomeKind::NoRule => "no rule fires".into(),
         OutcomeKind::Error(e) => format!("error: {e}"),
     };
-    println!("  L2 verdict   {}", ui::bold(&verdict));
-    if let Some(r) = resp {
-        println!("  {}", ui::dim(&format!("judge {} · {} ms{}", r.judge, r.latency_ms, if r.cached { " · cached" } else { "" })));
+    let judge = resp.map(|r| format!("judge {} · {} ms{}", r.judge, r.latency_ms, if r.cached { " · cached" } else { "" }));
+    Ok(Some(RulesExplanation { rows, verdict, judge }))
+}
+
+/// Explain policy rules for one path (used by `tidy explain`).
+pub fn explain_rules(p: &Path, policy: &Policy) -> Result<()> {
+    if policy.rules.is_empty() {
+        return Ok(());
+    }
+    let Some(x) = rules_for_path(p, policy)? else {
+        println!("  L2 rules     {}", ui::dim("none apply (scope/filter)"));
+        return Ok(());
+    };
+    for (id, p, tau, action) in &x.rows {
+        println!("  L2 {:<18} p={}  τ={:.2}  {}", id, p.map(|p| format!("{p:.2}")).unwrap_or("–".into()), tau, ui::dim(action));
+    }
+    println!("  L2 verdict   {}", ui::bold(&x.verdict));
+    if let Some(j) = &x.judge {
+        println!("  {}", ui::dim(j));
     }
     Ok(())
 }

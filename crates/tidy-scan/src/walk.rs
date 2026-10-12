@@ -3,7 +3,8 @@
 //! Each directory is one rayon job. The worker that reads a directory owns
 //! its `DirNode` exclusively while reading, so per-file accounting needs no
 //! synchronisation; the only shared state is the id counter, the hardlink
-//! set (only touched for `nlink > 1`) and atomics for errors.
+//! set (only touched for `nlink > 1`) and, when asked for, progress counters
+//! (one atomic add per directory). Errors are counted per worker.
 
 use crate::entry::{EntryInfo, Kind, ReadOptions, flags};
 use crate::index::{DirNode, FileHit, Index, NO_PARENT, ScanStats, SizeKind, node_flags};
@@ -13,7 +14,8 @@ use parking_lot::Mutex;
 use rustc_hash::FxHashSet;
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -28,11 +30,30 @@ pub struct ScanOptions {
     pub top_k: usize,
     /// Size used to rank retained files.
     pub top_by: SizeKind,
+    /// Live counters for progress displays, and a cancel switch.
+    pub progress: Option<Arc<ScanProgress>>,
 }
 
 impl Default for ScanOptions {
     fn default() -> Self {
-        ScanOptions { threads: 0, cross_mounts: false, private: false, top_k: 256, top_by: SizeKind::Alloc }
+        ScanOptions { threads: 0, cross_mounts: false, private: false, top_k: 256, top_by: SizeKind::Alloc, progress: None }
+    }
+}
+
+/// Counters a scan updates as it goes (one atomic add per directory), plus
+/// a flag that stops it early.
+#[derive(Debug, Default)]
+pub struct ScanProgress {
+    pub dirs: AtomicU64,
+    pub files: AtomicU64,
+    /// Allocated bytes seen so far.
+    pub bytes: AtomicU64,
+    pub cancel: AtomicBool,
+}
+
+impl ScanProgress {
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
     }
 }
 
@@ -44,6 +65,8 @@ pub enum ScanError {
     NotDir(PathBuf),
     #[error("thread pool: {0}")]
     Pool(String),
+    #[error("scan cancelled")]
+    Cancelled,
 }
 
 /// Default thread count: walking is latency-bound (metadata I/O), so more
@@ -123,6 +146,7 @@ struct Ctx {
     root_dev: u64,
     cross_mounts: bool,
     links: Vec<Mutex<FxHashSet<(u64, u64)>>>,
+    progress: Option<Arc<ScanProgress>>,
 }
 
 impl Ctx {
@@ -166,6 +190,7 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
         root_dev,
         cross_mounts: opts.cross_mounts,
         links: (0..LINK_SHARDS).map(|_| Mutex::new(FxHashSet::default())).collect(),
+        progress: opts.progress.clone(),
     };
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -178,6 +203,9 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
     let root_job = Job { id: 0, parent: NO_PARENT, path: root_c.clone().into_boxed_slice() };
     pool.scope(|s| process(s, root_job, &ctx));
     drop(pool);
+    if ctx.progress.as_ref().is_some_and(|p| p.cancelled()) {
+        return Err(ScanError::Cancelled);
+    }
 
     // ---- merge ---------------------------------------------------------
     let n = ctx.next_id.load(Ordering::Relaxed) as usize;
@@ -235,6 +263,9 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
 }
 
 fn process<'s>(s: &rayon::Scope<'s>, job: Job, ctx: &'s Ctx) {
+    if ctx.progress.as_ref().is_some_and(|p| p.cancelled()) {
+        return;
+    }
     let wi = rayon::current_thread_index().unwrap_or(0);
     let mut children: Vec<Job> = Vec::new();
     {
@@ -319,6 +350,11 @@ fn process<'s>(s: &rayon::Scope<'s>, job: Job, ctx: &'s Ctx) {
             if samples.len() < 32 {
                 samples.push(format!("{}: {}", String::from_utf8_lossy(&job.path[..job.path.len() - 1]), err));
             }
+        }
+        if let Some(p) = &ctx.progress {
+            p.dirs.fetch_add(1, Ordering::Relaxed);
+            p.files.fetch_add(node.files, Ordering::Relaxed);
+            p.bytes.fetch_add(node.own_alloc, Ordering::Relaxed);
         }
         nodes.push((job.id, node));
         children.reserve(pend.len());

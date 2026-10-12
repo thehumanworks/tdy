@@ -2,8 +2,9 @@
   description = "Tidy: analyse, clean up, compress and organise the files on your disk";
 
   # A channel tarball instead of github:NixOS/nixpkgs (home-manager does the
-  # same): smaller, lockable and not subject to GitHub rate limits. Flakes that use Tidy usually replace it
-  # with their own: `inputs.tidy.inputs.nixpkgs.follows = "nixpkgs";`
+  # same): smaller, lockable and not subject to GitHub rate limits. Flakes
+  # that use Tidy usually replace it with their own:
+  # `inputs.tidy.inputs.nixpkgs.follows = "nixpkgs";`
   # Tidy needs Rust 1.88 or newer from whichever nixpkgs builds it.
   inputs.nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
 

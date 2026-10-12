@@ -320,7 +320,7 @@ pub fn cmd_review(c: ReviewCmd) -> Result<()> {
         return edit_in_editor(&mut plan);
     }
     if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
-        return crate::tui::review(&mut plan, &f);
+        return crate::tui::review(plan, &f);
     }
     // Non-interactive: print the editor view.
     print!("{}", review::render_editor(&plan));
@@ -402,12 +402,18 @@ fn current_flags(p: &std::path::Path) -> u32 {
     }
 }
 
-pub fn cmd_apply(c: ApplyCmd) -> Result<()> {
-    let (mut plan, _) = store::load(c.plan.as_deref())?;
-    let policy = match &plan.header.policy {
+/// The policy a plan was made with (for its guard settings), if it still
+/// exists; otherwise the defaults.
+pub fn plan_policy(plan: &tidy_plan::Plan) -> Result<Policy> {
+    Ok(match &plan.header.policy {
         Some(p) if p.exists() => Policy::load(p)?.0,
         _ => Policy::default(),
-    };
+    })
+}
+
+pub fn cmd_apply(c: ApplyCmd) -> Result<()> {
+    let (mut plan, _) = store::load(c.plan.as_deref())?;
+    let policy = plan_policy(&plan)?;
     let approved = plan.entries.iter().filter(|e| e.status == Status::Approved).count();
     if approved == 0 {
         println!("nothing approved in {} — run `tidy review {}`", plan.header.id, plan.header.id);
@@ -451,6 +457,27 @@ pub fn cmd_apply(c: ApplyCmd) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Ok,
+    Skip,
+    Fail,
+    Would,
+    Note,
+}
+
+/// One apply/undo event as plain text (no colour), with its kind.
+pub fn event_text(ev: &Event<'_>) -> (EventKind, String) {
+    let home = tidy_scan::path::home_dir().display().to_string();
+    match ev {
+        Event::Ok(e, m) => (EventKind::Ok, format!("{:<5} {}", e.id, m.replace(&home, "~"))),
+        Event::Skip(e, m) => (EventKind::Skip, format!("{:<5} {}  {}", e.id, display_path(&e.path), m)),
+        Event::Fail(e, m) => (EventKind::Fail, format!("{:<5} {}  {}", e.id, display_path(&e.path), m)),
+        Event::WouldDo(e, m) => (EventKind::Would, format!("{:<5} {}", e.id, m.replace(&home, "~"))),
+        Event::Note(m) => (EventKind::Note, m.clone()),
+    }
+}
+
 fn print_event(ev: &Event<'_>, json: bool) {
     if json {
         let (kind, e, msg) = match ev {
@@ -488,28 +515,65 @@ pub fn cmd_undo(c: UndoCmd) -> Result<()> {
     Ok(())
 }
 
+/// Detector and guard verdicts for one path (no judge calls).
+#[derive(Debug, Clone)]
+pub struct Explanation {
+    pub path: PathBuf,
+    pub files: u64,
+    pub logical: u64,
+    pub newest: i64,
+    /// (id, what, hint)
+    pub detector: Option<(String, String, String)>,
+    pub guards: Vec<(Action, Result<(), String>)>,
+}
+
+pub fn explain_path(p: &std::path::Path, policy: &Policy) -> Result<Explanation> {
+    explain_path_with(p, &Guards::new(policy.guard_config()), None)
+}
+
+/// What a caller already knows about a directory (from a scan), so the
+/// explanation needs no second walk of the tree.
+pub struct Known {
+    pub files: u64,
+    pub logical: u64,
+    pub newest: i64,
+    pub git_roots: Vec<PathBuf>,
+    /// (id, what, hint, min_age) from the detectors.
+    pub detector: Option<(String, String, String, Option<i64>)>,
+}
+
+pub fn explain_path_with(p: &std::path::Path, guards: &Guards, known: Option<Known>) -> Result<Explanation> {
+    let md = std::fs::symlink_metadata(p)?;
+    let (files, logical, mtime, det, git) = match known {
+        Some(k) => (k.files, k.logical, k.newest, k.detector, Some(k.git_roots)),
+        None if md.is_dir() => {
+            let (f, l, m) = tidy_ops::fingerprint::tree_summary(p)?;
+            let d = tidy_rules::detect::classify(p).map(|d| (d.0.to_string(), d.1.to_string(), d.2.to_string(), d.3));
+            (f, l, m, d, None)
+        }
+        None => {
+            use std::os::unix::fs::MetadataExt;
+            (1, md.len(), md.mtime(), None, None)
+        }
+    };
+    let facts =
+        Facts { mtime_max: (mtime != 0).then_some(mtime), flags: 0, regenerable: det.is_some(), min_age: det.as_ref().and_then(|d| d.3) };
+    let guards = [Action::Delete, Action::Trash, Action::Move, Action::Tag]
+        .iter()
+        .map(|&a| (a, guards.check(p, a, &facts, git.as_deref()).map_err(|b| b.to_string())))
+        .collect();
+    Ok(Explanation { path: p.to_path_buf(), files, logical, newest: mtime, detector: det.map(|d| (d.0, d.1, d.2)), guards })
+}
+
 pub fn cmd_explain(c: ExplainCmd) -> Result<()> {
     let p = std::fs::canonicalize(expand_tilde(&c.path)).with_context(|| c.path.clone())?;
     let (policy, _, _) = load_policy(c.policy.as_deref())?;
-    let guards = Guards::new(policy.guard_config());
-    let md = std::fs::symlink_metadata(&p)?;
-    let (files, logical, mtime) = if md.is_dir() {
-        tidy_ops::fingerprint::tree_summary(&p)?
-    } else {
-        use std::os::unix::fs::MetadataExt;
-        (1, md.len(), md.mtime())
-    };
-    let det = if md.is_dir() { tidy_rules::detect::classify(&p) } else { None };
-    let regenerable = det.is_some();
-    let min_age = det.and_then(|d| d.3);
-    let facts = Facts { mtime_max: (mtime != 0).then_some(mtime), flags: 0, regenerable, min_age };
-    let actions = [Action::Delete, Action::Trash, Action::Move, Action::Tag];
-    let results: Vec<(Action, Result<(), tidy_rules::Block>)> = actions.iter().map(|&a| (a, guards.check(&p, a, &facts, None))).collect();
+    let x = explain_path(&p, &policy)?;
     if c.json {
         let v = serde_json::json!({
-            "path": p, "files": files, "logical": logical, "newest_mtime": mtime,
-            "detector": det.map(|d| serde_json::json!({"id": d.0, "what": d.1, "hint": d.2})),
-            "guards": results.iter().map(|(a, r)| serde_json::json!({"action": a.as_str(), "allowed": r.is_ok(), "block": r.as_ref().err().map(|b| b.to_string())})).collect::<Vec<_>>(),
+            "path": x.path, "files": x.files, "logical": x.logical, "newest_mtime": x.newest,
+            "detector": x.detector.map(|d| serde_json::json!({"id": d.0, "what": d.1, "hint": d.2})),
+            "guards": x.guards.iter().map(|(a, r)| serde_json::json!({"action": a.as_str(), "allowed": r.is_ok(), "block": r.as_ref().err()})).collect::<Vec<_>>(),
         });
         println!("{v}");
         return Ok(());
@@ -519,19 +583,19 @@ pub fn cmd_explain(c: ExplainCmd) -> Result<()> {
         ui::bold(&display_path(&p)),
         ui::dim(&format!(
             "{} · {} files · newest change {} ago",
-            fmt::bytes(logical),
-            ui::thousands(files),
-            fmt::age(fmt::now_secs() - mtime)
+            fmt::bytes(x.logical),
+            ui::thousands(x.files),
+            fmt::age(fmt::now_secs() - x.newest)
         ))
     );
-    match det {
-        Some((id, what, hint, _)) => println!("  L1 detector  {} — {} ({})", ui::bold(id), what, hint),
+    match x.detector {
+        Some((id, what, hint)) => println!("  L1 detector  {} — {} ({})", ui::bold(&id), what, hint),
         None => println!("  L1 detector  {}", ui::dim("none")),
     }
-    for (a, r) in &results {
+    for (a, r) in &x.guards {
         match r {
             Ok(()) => println!("  L0 {:<9} {}", a.as_str(), ui::green("allowed")),
-            Err(b) => println!("  L0 {:<9} {} {}", a.as_str(), ui::red("blocked"), ui::dim(&b.to_string())),
+            Err(b) => println!("  L0 {:<9} {} {}", a.as_str(), ui::red("blocked"), ui::dim(b)),
         }
     }
     crate::judge_cmds::explain_rules(&p, &policy)?;

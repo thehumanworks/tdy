@@ -1,6 +1,8 @@
+mod app;
 mod judge_cmds;
 mod mcp;
 mod plan_cmds;
+mod propose;
 mod scan_cmds;
 mod space_cmds;
 mod tui;
@@ -12,12 +14,18 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "tidy", version, about = "Analyse, clean up, compress and organise files on disk", propagate_version = true)]
 struct Cli {
+    /// Without a command, `tidy` opens the interactive UI (in a terminal).
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Interactive UI: explore the disk, review and apply plans, run cleanups.
+    Ui {
+        /// Folder to explore (default: the current folder).
+        path: Option<String>,
+    },
     /// Scan a directory and show where the space goes.
     Scan(scan_cmds::ScanCmd),
     /// Largest files, or directories by bytes held directly.
@@ -73,6 +81,10 @@ enum BenchCmd {
     Judges(judge_cmds::BenchJudgesCmd),
 }
 
+/// Tests that change the process environment take this lock.
+#[cfg(test)]
+pub(crate) static TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn main() {
     // Exit quietly when piped into `head` and friends.
     #[cfg(unix)]
@@ -80,7 +92,22 @@ fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
-    let r = match cli.cmd {
+    let Some(cmd) = cli.cmd else {
+        use std::io::IsTerminal;
+        if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+            // Not interactive: behave like clap with a missing command.
+            eprintln!("{}", <Cli as clap::CommandFactory>::command().render_help());
+            std::process::exit(2);
+        }
+        let r = app::run(None);
+        if let Err(e) = r {
+            eprintln!("tidy: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    };
+    let r = match cmd {
+        Cmd::Ui { path } => app::run(path),
         Cmd::Scan(c) => scan_cmds::cmd_scan(c),
         Cmd::Top(c) => scan_cmds::cmd_top(c),
         Cmd::Diff(c) => scan_cmds::cmd_diff(c),

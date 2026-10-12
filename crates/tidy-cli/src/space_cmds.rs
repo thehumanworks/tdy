@@ -19,7 +19,8 @@ fn roots(paths: &[String]) -> Result<Vec<PathBuf>> {
 
 #[derive(Args)]
 pub struct DupesCmd {
-    #[arg(default_value = "~")]
+    /// Folders to search (default: the current folder).
+    #[arg(default_value = ".")]
     pub paths: Vec<String>,
     #[arg(long, default_value = "1MB")]
     pub min_size: String,
@@ -134,7 +135,8 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
 
 #[derive(Args)]
 pub struct ArchiveCmd {
-    #[arg(default_value = "~")]
+    /// Folders to look in (default: the current folder).
+    #[arg(default_value = ".")]
     pub paths: Vec<String>,
     /// Only folders untouched for this long.
     #[arg(long, default_value = "1y")]

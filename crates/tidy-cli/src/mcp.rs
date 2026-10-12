@@ -24,12 +24,13 @@ Every applied entry can be inspected with tidy_show_plan and most can be reverte
 
 fn tools() -> Value {
     let path = json!({"type": "string", "description": "Absolute path or ~/…"});
+    let opt_path = json!({"type": "string", "description": "Absolute path or ~/… (default: the server's current folder)"});
     json!([
         {"name": "tidy_scan", "description": "Scan a directory: totals and the largest subtrees (dust-style).",
-         "inputSchema": {"type": "object", "properties": {"path": path, "lines": {"type": "integer", "default": 20}, "by": {"type": "string", "enum": ["alloc", "logical", "private"], "default": "alloc"}}, "required": ["path"]},
+         "inputSchema": {"type": "object", "properties": {"path": opt_path, "lines": {"type": "integer", "default": 20}, "by": {"type": "string", "enum": ["alloc", "logical", "private"], "default": "alloc"}}},
          "annotations": {"readOnlyHint": true}},
         {"name": "tidy_top", "description": "Largest files under a path, or directories by bytes held directly (dirs=true).",
-         "inputSchema": {"type": "object", "properties": {"path": path, "lines": {"type": "integer", "default": 20}, "dirs": {"type": "boolean", "default": false}}, "required": ["path"]},
+         "inputSchema": {"type": "object", "properties": {"path": opt_path, "lines": {"type": "integer", "default": 20}, "dirs": {"type": "boolean", "default": false}}},
          "annotations": {"readOnlyHint": true}},
         {"name": "tidy_explain", "description": "Why a path would or would not be touched: detector match, guard verdicts per action, policy rule probabilities.",
          "inputSchema": {"type": "object", "properties": {"path": path}, "required": ["path"]},
@@ -156,7 +157,7 @@ fn compact(e: &Entry) -> Value {
 pub fn call(name: &str, a: &Value) -> Result<Value> {
     match name {
         "tidy_scan" => {
-            let root = canon(s(a, "path").unwrap_or("~"))?;
+            let root = canon(s(a, "path").unwrap_or("."))?;
             let by: SizeKind = s(a, "by").unwrap_or("alloc").parse().map_err(anyhow::Error::msg)?;
             let n = a.get("lines").and_then(Value::as_u64).unwrap_or(20) as usize;
             let idx = tidy_scan::scan(
@@ -170,7 +171,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             )
         }
         "tidy_top" => {
-            let root = canon(s(a, "path").unwrap_or("~"))?;
+            let root = canon(s(a, "path").unwrap_or("."))?;
             let n = a.get("lines").and_then(Value::as_u64).unwrap_or(20) as usize;
             let idx = tidy_scan::scan(&root, &ScanOptions { top_k: n, ..Default::default() })?;
             if a.get("dirs").and_then(Value::as_bool) == Some(true) {

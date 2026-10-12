@@ -136,3 +136,20 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(test)]
+mod defaults {
+    use super::*;
+
+    /// Commands that take paths default to the current folder, not home.
+    #[test]
+    fn paths_default_to_the_current_folder() {
+        let parse = |args: &[&str]| Cli::try_parse_from(args).unwrap().cmd.unwrap();
+        assert!(matches!(parse(&["tidy", "plan"]), Cmd::Plan(c) if c.paths == ["."]));
+        assert!(matches!(parse(&["tidy", "dupes"]), Cmd::Dupes(c) if c.paths == ["."]));
+        assert!(matches!(parse(&["tidy", "archive"]), Cmd::Archive(c) if c.paths == ["."]));
+        assert!(matches!(parse(&["tidy", "calibrate"]), Cmd::Calibrate(c) if c.paths == ["."]));
+        assert!(matches!(parse(&["tidy", "scan"]), Cmd::Scan(c) if c.scan.path == "."));
+        assert!(matches!(parse(&["tidy", "ui"]), Cmd::Ui { path: None }));
+    }
+}

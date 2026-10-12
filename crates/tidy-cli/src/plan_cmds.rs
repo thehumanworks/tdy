@@ -15,8 +15,8 @@ use tidy_scan::{ScanOptions, fmt, path::display_path, path::expand_tilde};
 
 #[derive(Args)]
 pub struct PlanCmd {
-    /// Directories to plan for.
-    #[arg(default_value = "~")]
+    /// Directories to plan for (default: the current folder).
+    #[arg(default_value = ".")]
     pub paths: Vec<String>,
     /// Policy file (default ~/.config/tidy/policy.toml if present).
     #[arg(long)]

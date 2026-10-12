@@ -41,7 +41,7 @@ impl ScanArgs {
 #[derive(Args)]
 pub struct ScanCmd {
     #[command(flatten)]
-    scan: ScanArgs,
+    pub(crate) scan: ScanArgs,
     /// Number of entries to show in the tree.
     #[arg(short = 'n', long, default_value_t = 24)]
     lines: usize,

@@ -263,7 +263,7 @@ Move destinations get their own check: never into system, credential, app-data o
 | Judges | `judge ping`, `judge ask`, `bench judges` |
 | Automation | `watch`, `mcp` |
 
-`latest` is the default plan for `review`, `apply`, `undo` and `show`. Main commands emit JSON or NDJSON for scripts. `NO_COLOR` is respected. `SIGPIPE` keeps its default action, so piping into `head` works.
+Commands that take a folder default to the current folder (MCP's `tidy_scan` and `tidy_top`: the server's). `latest` is the default plan for `review`, `apply`, `undo` and `show`. Main commands emit JSON or NDJSON for scripts. `NO_COLOR` is respected. `SIGPIPE` keeps its default action, so piping into `head` works.
 
 ## 6. Concurrency and resources
 

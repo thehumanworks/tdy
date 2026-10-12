@@ -502,7 +502,7 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
             let calib = Calibration::load();
             let built = build_judge(&pol, true);
             let jid = built.as_ref().ok().and_then(|b| b.as_ref()).map(|b| b.id.clone());
-            let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], jid.as_deref(), &calib);
+            let rules = l2::compile(&pol, &[cwd()], jid.as_deref(), &calib);
             for r in &rules {
                 let tau = if r.deterministic() && !r.is_keep() { "τ –".to_string() } else { format!("τ={:.2}", r.threshold) };
                 let calibrated = jid.as_deref().and_then(|j| calib.get(j, &r.rule.id)).is_some();
@@ -573,7 +573,7 @@ pub fn cmd_policy(c: PolicyCmd) -> Result<()> {
                 eprintln!("{}", ui::yellow("no [judge] configured: model-decided rules stay silent and keep rules protect everything"));
             }
             let calib = Calibration::load();
-            let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], built.as_ref().map(|b| b.id.as_str()), &calib);
+            let rules = l2::compile(&pol, &[cwd()], built.as_ref().map(|b| b.id.as_str()), &calib);
             let media = built.as_ref().map(|b| l2::Media::load(&pol, b.judge.caps()));
             // Guards are not under test here: allow everything.
             let guards = Guards::new(tidy_rules::GuardConfig { min_age: 0, settle: 0, ..Default::default() });
@@ -668,8 +668,8 @@ pub struct CalibrateCmd {
     /// Only fit thresholds from existing labels (no labelling).
     #[arg(long)]
     pub fit_only: bool,
-    /// Plan roots for rules without a scope.
-    #[arg(default_value = "~")]
+    /// Where rules without a scope look for items (default: the current folder).
+    #[arg(default_value = ".")]
     pub paths: Vec<String>,
 }
 
@@ -758,8 +758,16 @@ pub fn cmd_calibrate(c: CalibrateCmd) -> Result<()> {
 
 /// Whether a rule could apply to a labelled path (scope + name-based filters;
 /// size and age are not recorded with labels).
+/// The current folder: where rules without a scope apply by default.
+fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Whether a rule covers a labelled path. A rule without a scope covers any
+/// label: the labels themselves are the chosen sample, wherever they were
+/// collected.
 fn label_applies(r: &CompiledRule, path: &Path) -> bool {
-    if !r.scopes.iter().any(|s| path.starts_with(s)) {
+    if !r.rule.scope.is_empty() && !r.scopes.iter().any(|s| path.starts_with(s)) {
         return false;
     }
     let it = Item { path: path.to_path_buf(), is_dir: false, logical: 0, alloc: 0, mtime: 0, flags: 0, depth: 1, dir: None };
@@ -863,7 +871,7 @@ pub fn cmd_bench_judges(c: BenchJudgesCmd) -> Result<()> {
             }
         };
         let calib = Calibration::load();
-        let rules = l2::compile(&pol, &[tidy_scan::path::home_dir()], Some(&j.id()), &calib);
+        let rules = l2::compile(&pol, &[cwd()], Some(&j.id()), &calib);
         let media = l2::Media::load(&pol, j.caps());
         let guards = Guards::new(tidy_rules::GuardConfig { min_age: 0, settle: 0, ..Default::default() });
         let mut cases = Vec::new();

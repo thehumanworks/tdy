@@ -107,6 +107,8 @@ Nothing changes on disk until you confirm an apply, which uses the same guards, 
 
 ## Commands
 
+Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `archive`, `calibrate`) default to the current folder.
+
 | Command | What it does |
 |---|---|
 | `ui [PATH]` | The interactive UI (also plain `tidy` in a terminal) |

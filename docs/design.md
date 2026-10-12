@@ -43,7 +43,7 @@ scan → index → detect (L1) → guard (L0) → judge (L2) → plan → review
 | L2 Policy (judge) | Propose or veto |
 | L3 Human | Approves plan entries (manual) or pre-approves via `mode = "autonomous"` |
 
-Delete/quarantine combination (thresholds from `tidy calibrate`, per judge+model version):
+Delete/quarantine combination (thresholds from `tdy calibrate`, per judge+model version):
 
 ```
 any protect.* ≥ τp                                        → KEEP
@@ -68,7 +68,7 @@ endpoint = "http://localhost:11434/…"
 model = "clef-flash"
 
 [subjects]
-me = { refs = ["~/.config/tidy/subjects/me-1.jpg"] }
+me = { refs = ["~/.config/tdy/subjects/me-1.jpg"] }
 
 [[rule]]
 id          = "photos.dogs"
@@ -90,12 +90,12 @@ Semantics: rules evaluated in file order. For exclusive actions (move, rename, d
 ## Plans
 
 ```
-tidy plan ~ [--policy tidy.toml]        → plan id
-tidy review <id>                        # TUI, one by one
-tidy review <id> --edit                 # $EDITOR, rebase-style
-tidy review <id> --approve-all | --reject-all | --approve --rule R --min-p P
-tidy apply <id> [--dry-run]
-tidy undo <id> [--entry E]
+tdy plan ~ [--policy tdy.toml]        → plan id
+tdy review <id>                        # TUI, one by one
+tdy review <id> --edit                 # $EDITOR, rebase-style
+tdy review <id> --approve-all | --reject-all | --approve --rule R --min-p P
+tdy apply <id> [--dry-run]
+tdy undo <id> [--entry E]
 ```
 
 ## Interfaces
@@ -140,7 +140,7 @@ Personal builds: `RUSTFLAGS="-C target-cpu=native"`. PGO later via `cargo-pgo`. 
 
 Decisions made while building, beyond the spec above:
 
-- **Approval provenance.** Entries carry `approved_by`: `human` (TUI, `$EDITOR`, CLI) or `policy` (autonomous mode). MCP `tidy_apply` only runs those. Agents can propose and reject, never approve. Plans are addressed by id only, and paths passed to subprocesses (`tidy_plan`, `tidy_dupes`) can't carry flags.
+- **Approval provenance.** Entries carry `approved_by`: `human` (TUI, `$EDITOR`, CLI) or `policy` (autonomous mode). MCP `tdy_apply` only runs those. Agents can propose and reject, never approve. Plans are addressed by id only, and paths passed to subprocesses (`tdy_plan`, `tdy_dupes`) can't carry flags.
 - **Two age floors.** Removals (delete, trash, quarantine, archive, dedupe) require `min_age` (default 7d) since the newest change. Organising actions (move, rename, copy, tag) only wait for a settle time (120 s, or the watcher's `--settle`).
 - **Rule combination.**
   - Keep rules veto at τ = 0.15, and also when their question goes unanswered (fail-safe).

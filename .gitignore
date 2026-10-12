@@ -1,6 +1,6 @@
 /target
 .env
 *.local.toml
-.tidy-sync*
+.tdy-sync*
 result
 result-*

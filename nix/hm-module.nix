@@ -1,5 +1,5 @@
 # home-manager module: installs Tidy, writes your policy (validated at build
-# time) and optionally runs `tidy watch` as a user service (systemd on Linux,
+# time) and optionally runs `tdy watch` as a user service (systemd on Linux,
 # launchd on macOS).
 self:
 {
@@ -10,22 +10,22 @@ self:
 }:
 
 let
-  cfg = config.programs.tidy;
+  cfg = config.programs.tdy;
   toml = pkgs.formats.toml { };
   inherit (pkgs.stdenv.hostPlatform) isLinux isDarwin;
   exe = lib.getExe cfg.package;
 
-  # Generated policy, checked with `tidy policy check` so a typo fails the
-  # home-manager build instead of the next `tidy plan`.
+  # Generated policy, checked with `tdy policy check` so a typo fails the
+  # home-manager build instead of the next `tdy plan`.
   policyFile =
-    pkgs.runCommand "tidy-policy.toml"
+    pkgs.runCommand "tdy-policy.toml"
       {
         nativeBuildInputs = [ cfg.package ];
-        policy = toml.generate "tidy-policy-unchecked.toml" cfg.settings;
+        policy = toml.generate "tdy-policy-unchecked.toml" cfg.settings;
       }
       ''
-        export HOME="$TMPDIR" TIDY_HOME="$TMPDIR/data" TIDY_CONFIG_DIR="$TMPDIR/config" TIDY_NO_FNOX=1 NO_COLOR=1
-        tidy policy check --policy "$policy" > /dev/null
+        export HOME="$TMPDIR" TDY_HOME="$TMPDIR/data" TDY_CONFIG_DIR="$TMPDIR/config" TDY_NO_FNOX=1 NO_COLOR=1
+        tdy policy check --policy "$policy" > /dev/null
         cp "$policy" "$out"
       '';
 
@@ -55,13 +55,13 @@ let
   );
 in
 {
-  options.programs.tidy = {
+  options.programs.tdy = {
     enable = lib.mkEnableOption "Tidy, a fast disk analyser, cleaner and organiser";
 
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "tidy.packages.\${pkgs.stdenv.hostPlatform.system}.default";
+      defaultText = lib.literalExpression "tdy.packages.\${pkgs.stdenv.hostPlatform.system}.default";
       description = "The Tidy package to install.";
     };
 
@@ -69,9 +69,9 @@ in
       type = toml.type;
       default = { };
       description = ''
-        Policy written to {file}`$XDG_CONFIG_HOME/tidy/policy.toml` and
-        validated with `tidy policy check` at build time. Leave empty to
-        manage the file yourself (for example with `tidy init`). See the
+        Policy written to {file}`$XDG_CONFIG_HOME/tdy/policy.toml` and
+        validated with `tdy policy check` at build time. Leave empty to
+        manage the file yourself (for example with `tdy init`). See the
         README for the schema.
       '';
       example = lib.literalExpression ''
@@ -100,8 +100,8 @@ in
       type = lib.types.listOf toml.type;
       default = [ ];
       description = ''
-        Cases for `tidy policy test`, written to
-        {file}`$XDG_CONFIG_HOME/tidy/policy.tests.toml`.
+        Cases for `tdy policy test`, written to
+        {file}`$XDG_CONFIG_HOME/tdy/policy.tests.toml`.
       '';
       example = lib.literalExpression ''
         [
@@ -116,7 +116,7 @@ in
 
     watch = {
       enable = lib.mkEnableOption ''
-        `tidy watch` as a user service: new files in the policy's rule scopes
+        `tdy watch` as a user service: new files in the policy's rule scopes
         are judged once they settle and added to a watch plan (applied right
         away only in autonomous mode)
       '';
@@ -146,7 +146,7 @@ in
       environmentFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "/run/user/1000/secrets/tidy.env";
+        example = "/run/user/1000/secrets/tdy.env";
         description = ''
           File with `NAME=value` lines (for example `OPENAI_API_KEY=…`) loaded
           into the service. Give a path as a string so the secret never
@@ -162,7 +162,7 @@ in
           "--policy"
           "/path/to/policy.toml"
         ];
-        description = "Extra arguments for `tidy watch`.";
+        description = "Extra arguments for `tdy watch`.";
       };
     };
   };
@@ -172,17 +172,17 @@ in
       { home.packages = [ cfg.package ]; }
 
       (lib.mkIf (cfg.settings != { }) {
-        xdg.configFile."tidy/policy.toml".source = policyFile;
+        xdg.configFile."tdy/policy.toml".source = policyFile;
       })
 
       (lib.mkIf (cfg.policyTests != [ ]) {
-        xdg.configFile."tidy/policy.tests.toml".source = toml.generate "tidy-policy.tests.toml" {
+        xdg.configFile."tdy/policy.tests.toml".source = toml.generate "tdy-policy.tests.toml" {
           case = cfg.policyTests;
         };
       })
 
       (lib.mkIf (cfg.watch.enable && isLinux) {
-        systemd.user.services.tidy-watch = {
+        systemd.user.services.tdy-watch = {
           Unit = {
             Description = "Tidy: plan actions for new files in watched folders";
             # A missing or rule-less policy fails fast; don't retry forever.
@@ -206,7 +206,7 @@ in
       })
 
       (lib.mkIf (cfg.watch.enable && isDarwin) {
-        launchd.agents.tidy-watch = {
+        launchd.agents.tdy-watch = {
           enable = true;
           config = {
             ProgramArguments =
@@ -230,8 +230,8 @@ in
             ProcessType = "Background";
             LowPriorityIO = true;
             Nice = 10;
-            StandardOutPath = "${config.home.homeDirectory}/Library/Logs/tidy-watch.log";
-            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/tidy-watch.log";
+            StandardOutPath = "${config.home.homeDirectory}/Library/Logs/tdy-watch.log";
+            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/tdy-watch.log";
           };
         };
       })

@@ -1,0 +1,30 @@
+[package]
+name = "tdy-cli"
+description = "Tidy: analyse, clean up, compress and organise files on disk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tdy"
+path = "src/main.rs"
+
+[dependencies]
+tdy-scan.workspace = true
+tdy-ops.workspace = true
+tdy-plan.workspace = true
+tdy-rules.workspace = true
+tdy-judge.workspace = true
+toml.workspace = true
+blake3.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+ratatui = "0.30"
+crossterm = "0.29"
+notify = "8"
+
+[dev-dependencies]
+tempfile.workspace = true

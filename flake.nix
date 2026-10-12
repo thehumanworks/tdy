@@ -4,7 +4,7 @@
   # A channel tarball instead of github:NixOS/nixpkgs (home-manager does the
   # same): smaller, lockable and not subject to GitHub rate limits. Flakes
   # that use Tidy usually replace it with their own:
-  # `inputs.tidy.inputs.nixpkgs.follows = "nixpkgs";`
+  # `inputs.tdy.inputs.nixpkgs.follows = "nixpkgs";`
   # Tidy needs Rust 1.88 or newer from whichever nixpkgs builds it.
   inputs.nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
 
@@ -22,11 +22,11 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        tidy = pkgs.callPackage ./nix/package.nix { };
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.tidy;
+        tdy = pkgs.callPackage ./nix/package.nix { };
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.tdy;
       });
 
-      overlays.default = final: _prev: { tidy = final.callPackage ./nix/package.nix { }; };
+      overlays.default = final: _prev: { tdy = final.callPackage ./nix/package.nix { }; };
 
       nixosModules.default = import ./nix/nixos-module.nix self;
       # The system module only adds a package, so it works on nix-darwin too.
@@ -36,7 +36,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.tidy.unwrapped ];
+          inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.tdy.unwrapped ];
           packages = with pkgs; [
             cargo
             rustc
@@ -65,9 +65,9 @@
         in
         {
           # Builds and runs the whole test suite.
-          package = self.packages.${pkgs.stdenv.hostPlatform.system}.tidy;
+          package = self.packages.${pkgs.stdenv.hostPlatform.system}.tdy;
           fmt =
-            pkgs.runCommand "tidy-fmt"
+            pkgs.runCommand "tdy-fmt"
               {
                 nativeBuildInputs = [
                   pkgs.rustfmt

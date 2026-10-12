@@ -17,7 +17,7 @@ let
   cargoToml = lib.importTOML ../Cargo.toml;
 
   unwrapped = rustPlatform.buildRustPackage {
-    pname = "tidy";
+    pname = "tdy";
     inherit (cargoToml.workspace.package) version;
 
     src = lib.fileset.toSource {
@@ -30,10 +30,10 @@ let
     };
     cargoLock.lockFile = ../Cargo.lock;
 
-    # Only the `tidy` binary; `tidy-fixture` (benchmarks) stays out.
+    # Only the `tdy` binary; `tdy-fixture` (benchmarks) stays out.
     cargoBuildFlags = [
       "--package"
-      "tidy-cli"
+      "tdy-cli"
     ];
     cargoTestFlags = [ "--workspace" ];
     # Tests run in the dev profile: the release profile's fat LTO would make
@@ -49,7 +49,7 @@ let
         English and judged by a decision model.
       '';
       license = lib.licenses.mit;
-      mainProgram = "tidy";
+      mainProgram = "tdy";
       platforms = lib.platforms.linux ++ lib.platforms.darwin;
     };
   };
@@ -62,12 +62,12 @@ if runtimePath == [ ] then
   unwrapped
 else
   symlinkJoin {
-    pname = "tidy";
+    pname = "tdy";
     inherit (unwrapped) version meta;
     paths = [ unwrapped ];
     nativeBuildInputs = [ makeBinaryWrapper ];
     postBuild = ''
-      wrapProgram $out/bin/tidy --suffix PATH : ${lib.makeBinPath runtimePath}
+      wrapProgram $out/bin/tdy --suffix PATH : ${lib.makeBinPath runtimePath}
     '';
     passthru = { inherit unwrapped; };
   }

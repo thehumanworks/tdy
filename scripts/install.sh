@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Build Tidy in release mode, install it into Cargo's bin directory, and make
-# sure the `tidy` your shell finds is this one. macOS ships an unrelated,
-# much older HTML Tidy at /usr/bin/tidy; if that comes first on PATH,
-# `tidy --help` prints "Config: unknown option: help".
+# Build Tidy in release mode, install it into Cargo's bin directory as
+# `tdy`, and make sure the `tdy` your shell finds is this one. (The command
+# was `tidy` until it clashed with macOS's HTML Tidy at /usr/bin/tidy.)
 #
 #   scripts/install.sh              # tuned for this CPU (-C target-cpu=native)
 #   scripts/install.sh --portable   # runs on any CPU of this architecture
@@ -25,23 +24,24 @@ if [ "$native" = 1 ]; then
   export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
 fi
 
-cargo install --path crates/tidy-cli --locked --force
+cargo install --path crates/tdy-cli --locked --force
 
 bindir="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
-bin="$bindir/tidy"
+bin="$bindir/tdy"
 "$bin" --version
 
 hash -r 2>/dev/null || true
-first="$(command -v tidy || true)"
+first="$(command -v tdy || true)"
 if [ "$first" != "$bin" ]; then
   echo >&2
-  echo "warning: \`tidy\` on your PATH is ${first:-not found}, not $bin." >&2
-  if [ "$first" = "/usr/bin/tidy" ] && [ "$(uname -s)" = "Darwin" ]; then
-    echo "  /usr/bin/tidy is Apple's HTML Tidy, an unrelated program." >&2
-  fi
+  echo "warning: \`tdy\` on your PATH is ${first:-not found}, not $bin." >&2
   echo "  Put $bindir first on your PATH, for example in ~/.zshrc:" >&2
   echo "    export PATH=\"$bindir:\$PATH\"" >&2
-  echo "  then open a new terminal (or run \`hash -r\`) and check with \`which -a tidy\`." >&2
+  echo "  then open a new terminal (or run \`hash -r\`) and check with \`which -a tdy\`." >&2
   exit 1
 fi
-echo "ok: \`tidy\` resolves to $bin"
+echo "ok: \`tdy\` resolves to $bin"
+old="$bindir/tidy"
+if [ -x "$old" ] && "$old" --version 2>/dev/null | grep -q '^tidy '; then
+  echo "note: the old \`tidy\` binary is still at $old; remove it with \`cargo uninstall tidy-cli\`."
+fi

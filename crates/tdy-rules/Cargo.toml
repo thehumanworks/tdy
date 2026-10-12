@@ -1,0 +1,24 @@
+[package]
+name = "tdy-rules"
+description = "Guards (L0), detectors (L1) and the policy file for Tidy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tdy-scan.workspace = true
+tdy-ops.workspace = true
+tdy-plan.workspace = true
+tdy-judge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+blake3.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+jpeg-decoder = { version = "0.3", default-features = false }
+crc32fast = "1"
+
+[dev-dependencies]
+tempfile.workspace = true

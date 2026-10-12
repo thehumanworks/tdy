@@ -10,11 +10,11 @@ license = "MIT"
 authors = ["Tomas"]
 
 [workspace.dependencies]
-tidy-scan = { path = "crates/tidy-scan" }
-tidy-ops = { path = "crates/tidy-ops" }
-tidy-plan = { path = "crates/tidy-plan" }
-tidy-rules = { path = "crates/tidy-rules" }
-tidy-judge = { path = "crates/tidy-judge" }
+tdy-scan = { path = "crates/tdy-scan" }
+tdy-ops = { path = "crates/tdy-ops" }
+tdy-plan = { path = "crates/tdy-plan" }
+tdy-rules = { path = "crates/tdy-rules" }
+tdy-judge = { path = "crates/tdy-judge" }
 
 anyhow = "1"
 thiserror = "2"

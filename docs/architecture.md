@@ -9,7 +9,7 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 | Requirement | What it means in practice |
 |---|---|
 | Blazingly fast | Parallel, syscall-batched directory walks. The release build uses fat LTO and `panic = "abort"`. On Linux it scans about 2× faster than `du`. |
-| Resource-friendly | Memory grows with the number of directories, not files: about 150 MB for 10M files. There is no async runtime and no daemon unless you run `tidy watch`. |
+| Resource-friendly | Memory grows with the number of directories, not files: about 150 MB for 10M files. There is no async runtime and no daemon unless you run `tdy watch`. |
 | Safe | Nothing changes on disk without an approved plan. Every change is journalled, and reversible where the filesystem allows. Code guards outrank any model. |
 | Smart | Rules are written in plain English. A decision model (OpenAI `gpt-6-luna` via the Decisions API, or SystemOne-compatible TypeSafe Jev / Cloudflare Clef) judges them. |
 | Personal first | macOS (APFS) and Linux are first-class. Windows comes later. Single user, local state, CLI-first, with an MCP server for agents. |
@@ -32,12 +32,12 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 
 ```
                          ┌────────────────────────────────────────────┐
-  you / scripts ───────► │ tidy-cli  CLI · `tidy ui` · $EDITOR review  │ ◄──── agents (MCP, stdio)
+  you / scripts ───────► │ tdy-cli  CLI · `tdy ui` · $EDITOR review  │ ◄──── agents (MCP, stdio)
                          │           watch · MCP server · output       │
                          └──────┬───────────────┬─────────────────────┘
                                 │               │
                  ┌──────────────▼──────┐   ┌────▼─────────────────────┐
-                 │ tidy-rules          │──►│ tidy-judge               │──► OpenAI Decisions
+                 │ tdy-rules          │──►│ tdy-judge               │──► OpenAI Decisions
                  │ L0 guards           │   │ question IR, backends,   │──► TypeSafe Jev
                  │ L1 detectors        │   │ cache, cascade, HTTP     │──► Cloudflare Clef
                  │ L2 policy engine    │   └──────────────────────────┘
@@ -46,14 +46,14 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
                  └──┬──────────┬───────┘
                     │          │
           ┌─────────▼───┐  ┌───▼─────────────────────────────┐
-          │ tidy-plan   │─►│ tidy-ops                        │
+          │ tdy-plan   │─►│ tdy-ops                        │
           │ model, store│  │ fingerprints, safe fs ops,      │
           │ journal,    │  │ trash/quarantine, probes, xattrs│
           │ apply/undo  │  │ dupes, archive, compress        │
           └─────────┬───┘  └───┬─────────────────────────────┘
                     │          │
                  ┌──▼──────────▼───────────────────────────────┐
-                 │ tidy-scan  platform readers, parallel walker,│
+                 │ tdy-scan  platform readers, parallel walker,│
                  │            dir-only index, snapshots         │
                  └──────────────────────────────────────────────┘
 ```
@@ -62,19 +62,19 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 
 | Crate | Role | Depends on | Lines (src / tests) |
 |---|---|---|---|
-| `tidy-scan` | Platform directory readers, the work-stealing walker, the directory-only index, snapshots, the index cache and patching, file visitor | — | 3,055 / 438 |
-| `tidy-ops` | Fingerprints, safe filesystem primitives, trash and quarantine, probes (open files, git, cloud, mounts), xattr metadata, space actions | scan | 1,845 / — |
-| `tidy-plan` | Plan model (JSONL), store, fsync'd journal, apply / undo / crash recovery, review helpers, keeping cached indexes in step | scan, ops | 1,579 / 412 |
-| `tidy-judge` | Provider-neutral question IR, OpenAI and SystemOne backends, mock, persistent cache, cascade, HTTP with adaptive concurrency | — | 1,129 / — |
-| `tidy-rules` | L0 guards, L1 detectors, policy file and presets, L2 engine, item evidence, rule checks, EXIF and thumbnails, calibration, planner | scan, ops, plan, judge | 3,712 / 463 |
-| `tidy-cli` | The `tidy` binary: commands, the interactive UI (`tidy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 6,189 / — |
-| `tidy-bench` | `tidy-fixture`: deterministic trees for benchmarks; `tidy-cachebench`: cached starts and patches against rescans | scan | 256 / — |
+| `tdy-scan` | Platform directory readers, the work-stealing walker, the directory-only index, snapshots, the index cache and patching, file visitor | — | 3,055 / 438 |
+| `tdy-ops` | Fingerprints, safe filesystem primitives, trash and quarantine, probes (open files, git, cloud, mounts), xattr metadata, space actions | scan | 1,845 / — |
+| `tdy-plan` | Plan model (JSONL), store, fsync'd journal, apply / undo / crash recovery, review helpers, keeping cached indexes in step | scan, ops | 1,579 / 412 |
+| `tdy-judge` | Provider-neutral question IR, OpenAI and SystemOne backends, mock, persistent cache, cascade, HTTP with adaptive concurrency | — | 1,129 / — |
+| `tdy-rules` | L0 guards, L1 detectors, policy file and presets, L2 engine, item evidence, rule checks, EXIF and thumbnails, calibration, planner | scan, ops, plan, judge | 3,712 / 463 |
+| `tdy-cli` | The `tdy` binary: commands, the interactive UI (`tdy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 6,189 / — |
+| `tdy-bench` | `tdy-fixture`: deterministic trees for benchmarks; `tdy-cachebench`: cached starts and patches against rescans | scan | 256 / — |
 
 That is about 17,800 lines of Rust (counted with `wc -l`) plus about 1,300 lines of integration tests. There are 65 tests in total; unit tests live next to the code.
 
 ## 4. Data flow
 
-### Planning (`tidy plan PATHS`)
+### Planning (`tdy plan PATHS`)
 
 ```
               ┌──────────── L1 (deterministic) ─────────────┐
@@ -116,33 +116,33 @@ recover  on the next apply/undo: reconcile journal + filesystem; never delete a 
          destination is intact; dry runs never recover
 ```
 
-### Watch mode (`tidy watch`)
+### Watch mode (`tdy watch`)
 
 `notify` (FSEvents on macOS, inotify on Linux) watches the scopes of the action rules, recursively. Each changed path must stay unchanged for `--settle` seconds (default 2). Partial downloads (`.crdownload`, `.part`, `.download`, …), dotfiles and `node_modules` are ignored. Settled paths go through the same L2 engine and are appended to a watch plan. In autonomous mode, entries the policy approved are applied straight away, with the full minimum age still enforced for removals. Measured latency from arrival to plan entry is 2.1–2.6 s.
 
-### Interactive UI (`tidy ui`)
+### Interactive UI (`tdy ui`)
 
-`tidy ui [PATH]`, or plain `tidy` in a terminal, runs a ratatui app with three screens:
+`tdy ui [PATH]`, or plain `tdy` in a terminal, runs a ratatui app with three screens:
 
 - **Explore** browses the directory index, sorted by size, name, age or item count. It shows the cached index (§5.1) at once and replaces it when a background scan finishes; after an apply or undo it reloads the patched index instead of rescanning. Folders and their totals come from the index; the files of the folder on screen are read on demand, so memory stays proportional to folders. Each folder found by the detectors carries a detector tag. The details panel shows guard verdicts, computed from the scan's data so there is no second walk. Marked items become a trash or quarantine plan through the same code as MCP proposals (`propose.rs`), but approved by the human.
-- **Plans** reuses the review component of `tidy review` (`tui.rs`, saving after each change). Apply always runs a dry run first, shows the result, and waits for `y`. Undo also asks first.
+- **Plans** reuses the review component of `tdy review` (`tui.rs`, saving after each change). Apply always runs a dry run first, shows the result, and waits for `y`. Undo also asks first.
 - **Cleanup** runs `plan_detectors` and `policy_entries` on one folder and shows scan and judge progress as they happen.
 
 Scans, explanations, rule evaluation, proposals, cleanups, applies and undos each run on a worker thread and report over a channel (`app/worker.rs`). The screen redraws every 100 ms while work runs, and every 500 ms otherwise. Scans can be cancelled through `ScanProgress`.
 
 Dialogs queue: one never replaces another. Dialogs from finished jobs wait until no text is being typed, then ignore keys for 400 ms, so a stray keystroke can't confirm an apply. Edits to a plan are refused while a job runs on it. Child processes run with captured output, so they never draw over the screen.
 
-### Agents (`tidy mcp`)
+### Agents (`tdy mcp`)
 
 A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05.
 
-- **Tools:** `tidy_scan`, `tidy_top`, `tidy_explain`, `tidy_plan`, `tidy_propose`, `tidy_plans`, `tidy_show_plan`, `tidy_reject`, `tidy_apply`, `tidy_undo`, `tidy_policy_test`, `tidy_dupes`.
-- **Agents propose and reject; they never approve.** `tidy_apply` runs only entries with `approved_by` set to `human` or `policy`.
-- **No flag injection.** Plans are addressed by id only. Tools that start a subprocess (`tidy_plan`, `tidy_dupes`) reject paths that start with `-` and pass the rest after `--`; `tidy_dupes` also validates `min_size` and binds it as `--min-size=…`.
+- **Tools:** `tdy_scan`, `tdy_top`, `tdy_explain`, `tdy_plan`, `tdy_propose`, `tdy_plans`, `tdy_show_plan`, `tdy_reject`, `tdy_apply`, `tdy_undo`, `tdy_policy_test`, `tdy_dupes`.
+- **Agents propose and reject; they never approve.** `tdy_apply` runs only entries with `approved_by` set to `human` or `policy`.
+- **No flag injection.** Plans are addressed by id only. Tools that start a subprocess (`tdy_plan`, `tdy_dupes`) reject paths that start with `-` and pass the rest after `--`; `tdy_dupes` also validates `min_size` and binds it as `--min-size=…`.
 
 ## 5. Subsystems
 
-### 5.1 Scanner (`tidy-scan`)
+### 5.1 Scanner (`tdy-scan`)
 
 | Piece | Design |
 |---|---|
@@ -152,11 +152,11 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 | Walker | One rayon job per directory, work-stealing. The worker reading a directory owns its node, so per-file accounting needs no locks. Shared state is limited to an atomic id counter and a sharded hardlink set (touched only when `nlink > 1`); errors are counted per worker. The pool has 2× cores threads, clamped to 4–32, because walking is latency-bound. Never follows symlinks; stays on one device by default. On Linux, a directory with more than 4,096 entries has the rest stat-ed in chunks of 2,048 on other threads, with the worker's lock released meanwhile (rayon may run other directories on the waiting thread). Each chunk is totalled where it is read (a partial node, top-K and subfolder list) and the partials merge pairwise, so memory stays at the names of the remaining entries (about 20 MB per million). A single 1M-entry directory went from 2.95 s to 1.53 s on 2 vCPU. |
 | Index | Directories only: a flat arena of 64-byte POD `DirNode`s (parent, name offset, flags, dirs, files, logical, allocated, private, own bytes, newest mtime) plus one name buffer. A child's id is always greater than its parent's, so one reverse pass rolls totals up. Files are aggregated into their directory; only per-thread top-K heaps keep the largest files. |
 | Markers | While reading, flags record `CACHEDIR.TAG`, `Cargo.toml`, `package.json`, `pyvenv.cfg`, `.git` and similar. Detectors then need no second pass. |
-| Snapshots | `TIDYIDX\x01` header, JSON header, POD nodes, names, then the top files. Loading is one read plus a cast, then a validation pass (every parent before its children, names in bounds). Writes go to a per-process temporary file and are renamed into place. `tidy scan --save` keeps one rolling "latest" plus history per root for `tidy diff`. |
-| Index cache | Every full scan (`scan`, `top`, `diff`, `plan`, the UI, MCP) is also saved as `auto.idx` in its root's cache folder, with at least the 64 largest files: about 7 MB per 100k folders, saved in ~3 ms, loaded in 7–8 ms (`tidy scan --cached` takes 9 ms end to end, against 1.9 s for the scan). `cache::load` takes the newest suitable index: the folder's own, or one cut out of a cached ancestor's (`Index::extract`, ~10 ms for 93k files of a 1M-file index). Writes hold a `flock` on the index's lock file. Suitable means same mount handling, unshared bytes if asked for, and a long enough largest-files list (`ScanStats::top_k`). The newest 64 indexes are kept, up to 1 GiB; the least recently used go first. |
-| Patching | `tidy_plan::sync` wraps every apply and undo (CLI, UI, MCP, watch). Before, `patch::Watch` lists the folder holding each entry and that folder's parent (only inside cached roots), plus the plan's own files and XDG `.trashinfo` files; a folder that compress rewrites in place is marked for a rescan. Afterwards it lists them again, plus where items landed and every folder above that up to the cached root (quarantine creates `<plan>/<entry>/`). `Index::patch` plans first and changes nothing unless every folder checks out. A folder the index still matched before the change gets the before→after difference; one the index had fallen behind on, or only seen afterwards, is set to what is there now. Subfolders that disappeared are dropped (compacting the arena, so ids stay parent-first); new ones, or ones replaced under the same name (a different inode), are scanned and grafted on. Hard links refuse the patch (where a linked file counts is a scan's call), as does a rewritten root. `cache::sync` then, under the lock: leaves alone an index scanned after the change, drops one scanned while it ran or one the patch refused, and patches the rest. Moving 100 folders (40k–98k files) out of a 1M-file index: 21–25 ms, against 1.9–2.0 s to rescan. |
+| Snapshots | `TIDYIDX\x01` header, JSON header, POD nodes, names, then the top files. Loading is one read plus a cast, then a validation pass (every parent before its children, names in bounds). Writes go to a per-process temporary file and are renamed into place. `tdy scan --save` keeps one rolling "latest" plus history per root for `tdy diff`. |
+| Index cache | Every full scan (`scan`, `top`, `diff`, `plan`, the UI, MCP) is also saved as `auto.idx` in its root's cache folder, with at least the 64 largest files: about 7 MB per 100k folders, saved in ~3 ms, loaded in 7–8 ms (`tdy scan --cached` takes 9 ms end to end, against 1.9 s for the scan). `cache::load` takes the newest suitable index: the folder's own, or one cut out of a cached ancestor's (`Index::extract`, ~10 ms for 93k files of a 1M-file index). Writes hold a `flock` on the index's lock file. Suitable means same mount handling, unshared bytes if asked for, and a long enough largest-files list (`ScanStats::top_k`). The newest 64 indexes are kept, up to 1 GiB; the least recently used go first. |
+| Patching | `tdy_plan::sync` wraps every apply and undo (CLI, UI, MCP, watch). Before, `patch::Watch` lists the folder holding each entry and that folder's parent (only inside cached roots), plus the plan's own files and XDG `.trashinfo` files; a folder that compress rewrites in place is marked for a rescan. Afterwards it lists them again, plus where items landed and every folder above that up to the cached root (quarantine creates `<plan>/<entry>/`). `Index::patch` plans first and changes nothing unless every folder checks out. A folder the index still matched before the change gets the before→after difference; one the index had fallen behind on, or only seen afterwards, is set to what is there now. Subfolders that disappeared are dropped (compacting the arena, so ids stay parent-first); new ones, or ones replaced under the same name (a different inode), are scanned and grafted on. Hard links refuse the patch (where a linked file counts is a scan's call), as does a rewritten root. `cache::sync` then, under the lock: leaves alone an index scanned after the change, drops one scanned while it ran or one the patch refused, and patches the rest. Moving 100 folders (40k–98k files) out of a 1M-file index: 21–25 ms, against 1.9–2.0 s to rescan. |
 
-### 5.2 Filesystem operations (`tidy-ops`)
+### 5.2 Filesystem operations (`tdy-ops`)
 
 - **Fingerprints:** files use (dev, ino, size, mtime). Directories use a fresh subtree summary (file count, apparent bytes, newest mtime). Dedupe entries add a BLAKE3 hash.
 - **Safe primitives:**
@@ -167,7 +167,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
   - `unique_in` handles name conflicts.
   - `free_bytes`.
 - **Trash:** `~/.Trash` on macOS. On Linux, the XDG trash spec: `.trashinfo` files, home trash or a sticky `$topdir/.Trash`, chosen by checking the device of the nearest existing ancestor.
-- **Quarantine:** Tidy's own holding area on the same volume (`<data>/quarantine`, or `<volume>/.tidy-quarantine/<uid>` on other volumes), bucketed per plan and entry. Roots on other volumes are recorded in `<data>/quarantine-roots` when first used, so `tidy purge` empties every root without probing mounts; volumes that aren't mounted are skipped.
+- **Quarantine:** Tidy's own holding area on the same volume (`<data>/quarantine`, or `<volume>/.tdy-quarantine/<uid>` on other volumes), bucketed per plan and entry. Roots on other volumes are recorded in `<data>/quarantine-roots` when first used, so `tdy purge` empties every root without probing mounts; volumes that aren't mounted are skipped.
 - **Probes:**
   - open files (`lsof` on macOS, `/proc` on Linux)
   - git state (dirty, unpushed and stashed work; whether a path is ignored)
@@ -180,7 +180,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
   - *Archive:* `.tar.zst` via multithreaded zstd, verified by reading it back; the original is quarantined.
   - *Compress:* APFS decmpfs via `ditto --hfsCompression` with an atomic swap, or btrfs `defragment -czstd`. Compressibility is estimated by sampling with zstd-1.
 
-### 5.3 Plans (`tidy-plan`)
+### 5.3 Plans (`tdy-plan`)
 
 - **Plan file:** JSONL with one header line (id, roots, mode, policy path and hash, judge id) and one line per entry. Saved atomically (temp file plus rename) under `<data>/plans/<id>.jsonl`.
 - **Entry fields:**
@@ -192,7 +192,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 - **Executor:** same-volume moves are atomic renames. Cross-volume moves copy, verify, fsync, journal `copied`, and only then remove the source. Name conflicts follow the rule's `on_conflict`: `skip` (the default), `suffix`, or `dedupe-else-suffix`, which quarantines the source when the destination is identical.
 - **Review:** shared filters (rule, action, status, minimum p, path prefix), bulk status changes, one-line rendering with `⚠ uncertain`, and the rebase-style editor format.
 
-### 5.4 Rules (`tidy-rules`)
+### 5.4 Rules (`tdy-rules`)
 
 **L0 guards**, checked in this order. Rows marked ✱ apply only to actions that move, remove or rewrite the item (delete, trash, quarantine, move, rename, archive, dedupe, compress); tag and copy skip them.
 
@@ -215,9 +215,9 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 
 Move destinations get their own check: never into system, credential, app-data or package locations.
 
-**L1 detectors** are deterministic: build artefacts need a marker file next to them, and caches match known paths (`tidy detectors`). The 18 ids: `cargo-target`, `node-modules`, `python-venv`, `python-cache`, `swift-build`, `gradle-build`, `maven-target`, `js-build-cache`, `flutter-build`, `cmake-build`, `cachedir-tag`, `xcode-derived-data`, `xcode-device-support`, `simulator-caches`, `user-caches`, `model-caches`, `package-caches` and `logs` (children of `~/Library/Logs` older than 30 days).
+**L1 detectors** are deterministic: build artefacts need a marker file next to them, and caches match known paths (`tdy detectors`). The 18 ids: `cargo-target`, `node-modules`, `python-venv`, `python-cache`, `swift-build`, `gradle-build`, `maven-target`, `js-build-cache`, `flutter-build`, `cmake-build`, `cachedir-tag`, `xcode-derived-data`, `xcode-device-support`, `simulator-caches`, `user-caches`, `model-caches`, `package-caches` and `logs` (children of `~/Library/Logs` older than 30 days).
 
-**Policy** (`~/.config/tidy/policy.toml`): mode, guard knobs, detector settings, judge backends, subjects (reference photos), presets and `[[rule]]`s.
+**Policy** (`~/.config/tdy/policy.toml`): mode, guard knobs, detector settings, judge backends, subjects (reference photos), presets and `[[rule]]`s.
 - A rule has an `id`, an `action`, a `scope`, a `filter` (kind, ext, name globs, size, age, depth), criteria (`when.any`, `when.all`, `when.none`) and, for moves, `to` (a path template or `pick_from`).
 - Optional fields: `protects`, `check`, `always_review`, `content`, `threshold` and `mode`.
 
@@ -238,9 +238,9 @@ Move destinations get their own check: never into system, credential, app-data o
 
 **Checks** are code predicates a rule can require. `extracted-sibling` reads a zip's central directory (ZIP64-aware) and compares size and CRC-32 against the folder next to it. Checks re-run at apply time, and lossless checks are exempt from removal-only keep rules.
 
-**Calibration:** `tidy calibrate` collects labels (`labels.jsonl`) and fits a threshold per judge and rule (`calibration.json`). Action rules are fitted to a target precision (0.95); keep rules aim for full recall. Precedence is: your explicit threshold, then calibration, then a preset's threshold, then the default.
+**Calibration:** `tdy calibrate` collects labels (`labels.jsonl`) and fits a threshold per judge and rule (`calibration.json`). Action rules are fitted to a target precision (0.95); keep rules aim for full recall. Precedence is: your explicit threshold, then calibration, then a preset's threshold, then the default.
 
-### 5.5 Judges (`tidy-judge`)
+### 5.5 Judges (`tdy-judge`)
 
 | Piece | Design |
 |---|---|
@@ -253,11 +253,11 @@ Move destinations get their own check: never into system, credential, app-data o
 | Concurrency | `decide_many` runs scoped threads (32 by default) over blocking `ureq`. A shared AIMD gate halves concurrency on HTTP 429 and grows it back on success. Auth and config errors stop the batch at once. Requests over the question limit are split and merged. |
 | Keys | From the named environment variable, else `fnox get NAME`. Credentials are only ever sent over HTTPS (plain HTTP only to localhost). |
 
-### 5.6 CLI (`tidy-cli`)
+### 5.6 CLI (`tdy-cli`)
 
 | Area | Commands |
 |---|---|
-| Interactive | `ui [PATH]`, or plain `tidy` in a terminal |
+| Interactive | `ui [PATH]`, or plain `tdy` in a terminal |
 | Analyse | `scan`, `top`, `diff` |
 | Plans | `plan`, `plans`, `show`, `review`, `apply`, `undo`, `explain`, `purge` |
 | Space | `dupes [--plan]`, `archive [--transparent]` |
@@ -265,7 +265,7 @@ Move destinations get their own check: never into system, credential, app-data o
 | Judges | `judge ping`, `judge ask`, `bench judges` |
 | Automation | `watch`, `mcp` |
 
-Commands that take a folder default to the current folder (MCP's `tidy_scan` and `tidy_top`: the server's). `latest` is the default plan for `review`, `apply`, `undo` and `show`. Main commands emit JSON or NDJSON for scripts. `NO_COLOR` is respected. `SIGPIPE` keeps its default action, so piping into `head` works.
+Commands that take a folder default to the current folder (MCP's `tdy_scan` and `tdy_top`: the server's). `latest` is the default plan for `review`, `apply`, `undo` and `show`. Main commands emit JSON or NDJSON for scripts. `NO_COLOR` is respected. `SIGPIPE` keeps its default action, so piping into `head` works.
 
 ## 6. Concurrency and resources
 
@@ -277,7 +277,7 @@ Commands that take a folder default to the current folder (MCP's `tidy_scan` and
 | BLAKE3 | multithreaded (`rayon` feature) and memory-mapped for large files |
 | zstd archives | multithreaded (`zstdmt`) |
 | Watch | one `notify` watcher thread plus the main loop |
-| `tidy ui` | the UI thread draws and handles keys; each job (scan, explain, rules, propose, cleanup, apply, undo) gets its own thread and reports over a channel |
+| `tdy ui` | the UI thread draws and handles keys; each job (scan, explain, rules, propose, cleanup, apply, undo) gets its own thread and reports over a channel |
 
 There is no async runtime: network I/O is the only blocking wait that matters, and threads handle it well at this scale. Memory is bounded by the directory count (64 B per directory plus names) and the top-K heaps, not by the file count.
 
@@ -285,16 +285,16 @@ There is no async runtime: network I/O is the only blocking wait that matters, a
 
 | What | Where (macOS / Linux) | Override |
 |---|---|---|
-| Policy, tests | `~/.config/tidy/policy.toml`, `policy.tests.toml` | `TIDY_POLICY`, `TIDY_CONFIG_DIR`, `XDG_CONFIG_HOME` |
-| Calibration, labels | `~/.config/tidy/calibration.json`, `labels.jsonl` | `TIDY_CONFIG_DIR`, `XDG_CONFIG_HOME` |
-| Plans | `<data>/plans/<id>.jsonl` | `TIDY_HOME` |
-| Journal | `<data>/journal/` | `TIDY_HOME` |
-| Quarantine | `<data>/quarantine/<plan>/<entry>/`, or `<volume>/.tidy-quarantine/<uid>` | `TIDY_HOME` |
-| Quarantine roots on other volumes | `<data>/quarantine-roots` | `TIDY_HOME` |
-| Decision cache | `<data>/decisions/<judge-hash>.jsonl` | `TIDY_HOME` |
-| Index cache, snapshots | `<cache>/snapshots/<root-hash>/` (`auto.idx`; `latest.idx` and history from `scan --save`) | `TIDY_CACHE_DIR`, `XDG_CACHE_HOME` |
+| Policy, tests | `~/.config/tdy/policy.toml`, `policy.tests.toml` | `TDY_POLICY`, `TDY_CONFIG_DIR`, `XDG_CONFIG_HOME` |
+| Calibration, labels | `~/.config/tdy/calibration.json`, `labels.jsonl` | `TDY_CONFIG_DIR`, `XDG_CONFIG_HOME` |
+| Plans | `<data>/plans/<id>.jsonl` | `TDY_HOME` |
+| Journal | `<data>/journal/` | `TDY_HOME` |
+| Quarantine | `<data>/quarantine/<plan>/<entry>/`, or `<volume>/.tdy-quarantine/<uid>` | `TDY_HOME` |
+| Quarantine roots on other volumes | `<data>/quarantine-roots` | `TDY_HOME` |
+| Decision cache | `<data>/decisions/<judge-hash>.jsonl` | `TDY_HOME` |
+| Index cache, snapshots | `<cache>/snapshots/<root-hash>/` (`auto.idx`; `latest.idx` and history from `scan --save`) | `TDY_CACHE_DIR`, `XDG_CACHE_HOME` |
 
-`<data>` is `~/Library/Application Support/tidy` on macOS and `$XDG_DATA_HOME/tidy` (default `~/.local/share/tidy`) on Linux. `<cache>` is `~/Library/Caches/tidy` on macOS and `~/.cache/tidy` on Linux.
+`<data>` is `~/Library/Application Support/tdy` on macOS and `$XDG_DATA_HOME/tdy` (default `~/.local/share/tdy`) on Linux. `<cache>` is `~/Library/Caches/tdy` on macOS and `~/.cache/tdy` on Linux.
 
 ## 8. Platform matrix
 
@@ -342,7 +342,7 @@ There is no async runtime: network I/O is the only blocking wait that matters, a
 | `jpeg-decoder` | 0.3 | rules | DCT-scaled JPEG decode (fast thumbnails) |
 | `crc32fast` | 1 | rules | Zip CRC check (`extracted-sibling`) |
 | `clap` | 4.6 | cli, bench | Command line |
-| `ratatui`, `crossterm` | 0.30, 0.29 | cli | `tidy ui` and `tidy review` |
+| `ratatui`, `crossterm` | 0.30, 0.29 | cli | `tdy ui` and `tdy review` |
 | `notify` | 8 | cli | FSEvents and inotify for `watch` |
 | `memmap2` | 0.9 | workspace | Declared for snapshot mapping but not used directly; linked through `blake3`'s `mmap` feature |
 | `tempfile` | 3 | dev | Test sandboxes |
@@ -359,7 +359,7 @@ The dependency graph has 174 unique packages (including 13 proc-macros and Tidy'
 | `sips` (macOS), `heif-convert` (Linux) | HEIC and RAW thumbnails |
 | `ditto` (macOS), `btrfs` (Linux) | Transparent compression |
 | `osascript` / `notify-send` | Desktop notifications in `watch --notify` |
-| `$VISUAL` / `$EDITOR` | `tidy review --edit` |
+| `$VISUAL` / `$EDITOR` | `tdy review --edit` |
 
 ### External services (only for L2 rules)
 
@@ -383,8 +383,8 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
   - presets end to end
   - MCP approval enforcement
   - the interactive UI, headless (ratatui test backend): browse, mark, plan, dry run, apply and undo shown without a rescan, starting from the cached index, cleanup, dialog queueing and keystroke safety, non-UTF-8 names
-- `flake.nix` packages Tidy for Nix (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`) and provides an overlay, a NixOS/nix-darwin module, a home-manager module (policy written and checked at build time, `tidy watch` as a systemd or launchd user service) and a dev shell. `nix flake check` builds the package, runs the tests in the build sandbox, and checks Rust and Nix formatting. Files are in `nix/`.
-- `scripts/install.sh` runs `cargo install` (tuned for the CPU unless `--portable`) and checks that `tidy` on PATH is this binary, not macOS's `/usr/bin/tidy` (HTML Tidy).
+- `flake.nix` packages Tidy for Nix (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`) and provides an overlay, a NixOS/nix-darwin module, a home-manager module (policy written and checked at build time, `tdy watch` as a systemd or launchd user service) and a dev shell. `nix flake check` builds the package, runs the tests in the build sandbox, and checks Rust and Nix formatting. Files are in `nix/`.
+- `scripts/install.sh` runs `cargo install` (tuned for the CPU unless `--portable`) and checks that `tdy` on PATH is this binary.
 - `scripts/check-macos.sh` type-checks the macOS code paths from Linux (`aarch64-apple-darwin`) with a stub C compiler.
-- `bench/run.sh` compares `tidy scan` with du, dust, dua and gdu using hyperfine on `tidy-fixture` trees. Results are in `bench/results-linux-x86_64.md`.
-- Live checks (`tidy policy test`, `tidy bench judges`) run against the real judge and are cached.
+- `bench/run.sh` compares `tdy scan` with du, dust, dua and gdu using hyperfine on `tdy-fixture` trees. Results are in `bench/results-linux-x86_64.md`.
+- Live checks (`tdy policy test`, `tdy bench judges`) run against the real judge and are cached.

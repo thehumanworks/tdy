@@ -2160,6 +2160,119 @@ dependencies = [
 ]
 
 [[package]]
+name = "tdy-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rayon",
+ "tdy-scan",
+]
+
+[[package]]
+name = "tdy-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "crossterm",
+ "libc",
+ "notify",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tdy-judge",
+ "tdy-ops",
+ "tdy-plan",
+ "tdy-rules",
+ "tdy-scan",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "tdy-judge"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
+name = "tdy-ops"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "libc",
+ "parking_lot",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tar",
+ "tdy-scan",
+ "tempfile",
+ "thiserror 2.0.21",
+ "zstd",
+]
+
+[[package]]
+name = "tdy-plan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "libc",
+ "serde",
+ "serde_json",
+ "tdy-ops",
+ "tdy-scan",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "tdy-rules"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "crc32fast",
+ "image",
+ "jpeg-decoder",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tdy-judge",
+ "tdy-ops",
+ "tdy-plan",
+ "tdy-scan",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "tdy-scan"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "libc",
+ "parking_lot",
+ "rayon",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2286,119 +2399,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.8",
-]
-
-[[package]]
-name = "tidy-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "rayon",
- "tidy-scan",
-]
-
-[[package]]
-name = "tidy-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "crossterm",
- "libc",
- "notify",
- "ratatui",
- "serde",
- "serde_json",
- "tempfile",
- "tidy-judge",
- "tidy-ops",
- "tidy-plan",
- "tidy-rules",
- "tidy-scan",
- "toml",
-]
-
-[[package]]
-name = "tidy-judge"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "ureq",
-]
-
-[[package]]
-name = "tidy-ops"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "libc",
- "parking_lot",
- "rayon",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "thiserror 2.0.21",
- "tidy-scan",
- "zstd",
-]
-
-[[package]]
-name = "tidy-plan"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tidy-ops",
- "tidy-scan",
-]
-
-[[package]]
-name = "tidy-rules"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "crc32fast",
- "image",
- "jpeg-decoder",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "tidy-judge",
- "tidy-ops",
- "tidy-plan",
- "tidy-scan",
- "toml",
-]
-
-[[package]]
-name = "tidy-scan"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "libc",
- "parking_lot",
- "rayon",
- "rustc-hash",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]

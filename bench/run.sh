@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Benchmark `tidy scan` against du, dust, dua and gdu on a fixed fixture tree.
+# Benchmark `tdy scan` against du, dust, dua and gdu on a fixed fixture tree.
 #
-#   bench/run.sh                    # 1M-file fixture under $TMPDIR/tidy-bench
+#   bench/run.sh                    # 1M-file fixture under $TMPDIR/tdy-bench
 #   FILES=200000 bench/run.sh       # smaller tree
 #   FIX=~/some/real/dir bench/run.sh
 #
@@ -10,20 +10,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 FILES=${FILES:-1000000}
-FIX=${FIX:-${TMPDIR:-/tmp}/tidy-bench/f${FILES}}
+FIX=${FIX:-${TMPDIR:-/tmp}/tdy-bench/f${FILES}}
 RUNS=${RUNS:-10}
 OUT=${OUT:-bench/results-$(uname -s | tr A-Z a-z)-$(uname -m).md}
 
-RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}" cargo build --release -q -p tidy-cli -p tidy-bench
-TIDY=$PWD/target/release/tidy
+RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}" cargo build --release -q -p tdy-cli -p tdy-bench
+TIDY=$PWD/target/release/tdy
 
 if [ ! -d "$FIX" ]; then
   echo "generating $FIX ($FILES files)…"
-  ./target/release/tidy-fixture --out "$FIX" --files "$FILES"
+  ./target/release/tdy-fixture --out "$FIX" --files "$FILES"
 fi
 
 cmds=("$TIDY scan -q $FIX")
-names=("tidy")
+names=("tdy")
 command -v du   >/dev/null && { cmds+=("du -s $FIX");            names+=("du"); }
 command -v dust >/dev/null && { cmds+=("dust -P -d 0 $FIX");     names+=("dust"); }
 command -v dua  >/dev/null && { cmds+=("dua aggregate $FIX");    names+=("dua"); }

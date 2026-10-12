@@ -1,4 +1,4 @@
-# tidy
+# tdy
 
 Analyse, clean up, compress and organise the files on your disk — fast, frugal, and reversible.
 
@@ -11,13 +11,13 @@ Analyse, clean up, compress and organise the files on your disk — fast, frugal
 ## Install
 
 ```sh
-scripts/install.sh               # cargo install, tuned for this CPU; then checks which `tidy` your shell finds
+scripts/install.sh               # cargo install, tuned for this CPU; then checks which `tdy` your shell finds
 scripts/install.sh --portable    # the same without -C target-cpu=native
 ```
 
-**macOS:** the system ships an unrelated HTML Tidy at `/usr/bin/tidy`. If `tidy --help` prints `Config: unknown option: help`, that one comes first on your PATH. Put `~/.cargo/bin` before `/usr/bin` (the installer prints the line to add) and check with `which -a tidy`.
+**Renamed from `tidy`:** the command is `tdy`, so it no longer clashes with macOS's HTML Tidy at `/usr/bin/tidy`. On first run, `tdy` moves your policy, plans and caches from the old `tidy` folders to `tdy` ones and leaves links behind, so old plans can still be undone. `TIDY_*` environment variables are now `TDY_*`. Remove the old binary with `cargo uninstall tidy-cli`.
 
-To build without installing: `cargo build --release` (binary at `target/release/tidy`). Requires Rust 1.88+. The release profile uses fat LTO, one codegen unit and `panic = "abort"`.
+To build without installing: `cargo build --release` (binary at `target/release/tdy`). Requires Rust 1.88+. The release profile uses fat LTO, one codegen unit and `panic = "abort"`.
 
 ### Nix: NixOS, home-manager, nix-darwin
 
@@ -27,10 +27,10 @@ The repository is a flake (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`). T
 nix run ~/projects/tidy -- --help
 ```
 
-Add it to your own flake. Use `github:<owner>/tidy` instead of the local path once the repository is pushed:
+Add it to your own flake. Use `github:<owner>/tdy` instead of the local path once the repository is pushed:
 
 ```nix
-inputs.tidy = {
+inputs.tdy = {
   url = "git+file:///Users/tomas/projects/tidy";
   inputs.nixpkgs.follows = "nixpkgs";   # needs a nixpkgs with Rust 1.88+
 };
@@ -39,17 +39,17 @@ inputs.tidy = {
 **System-wide** (NixOS, or nix-darwin with `darwinModules.default`):
 
 ```nix
-imports = [ inputs.tidy.nixosModules.default ];
-programs.tidy.enable = true;
+imports = [ inputs.tdy.nixosModules.default ];
+programs.tdy.enable = true;
 ```
 
 **Per user** (home-manager), with your policy and the optional watch service:
 
 ```nix
-imports = [ inputs.tidy.homeModules.default ];
-programs.tidy = {
+imports = [ inputs.tdy.homeModules.default ];
+programs.tdy = {
   enable = true;
-  # Written to ~/.config/tidy/policy.toml and checked with `tidy policy check`
+  # Written to ~/.config/tdy/policy.toml and checked with `tdy policy check`
   # at build time, so a broken policy fails the switch, not the next plan.
   settings = {
     presets = [ "screenshots" "archive-leftovers" ];
@@ -61,41 +61,41 @@ programs.tidy = {
   watch = {
     enable = true;                      # systemd user service on Linux, launchd agent on macOS
     paths = [ "~/Downloads" "~/Desktop" ];
-    environmentFile = "/run/user/1000/secrets/tidy.env";   # OPENAI_API_KEY=…; a string path, so it stays out of the Nix store
+    environmentFile = "/run/user/1000/secrets/tdy.env";   # OPENAI_API_KEY=…; a string path, so it stays out of the Nix store
   };
 };
 ```
 
 **Other outputs:**
-- `overlays.default` adds `pkgs.tidy`.
+- `overlays.default` adds `pkgs.tdy`.
 - `packages.<system>.default.override { withHeif = true; }` adds `heif-convert` for HEIC thumbnails on Linux.
 - `devShells.default` (`nix develop`) has the Rust toolchain, clippy, rust-analyzer and hyperfine.
 - `nix flake check` builds the package, runs the test suite, and checks Rust and Nix formatting.
 
 **Notes:**
-- The package appends a minimal `git` to `tidy`'s PATH, so the git guard works even where git isn't installed If git is already on your PATH, `withGit = false` drops it and shrinks the closure from about 170 MiB to 55 MiB. Changing these runtime tools only rebuilds a small wrapper, not Tidy itself.
-- Nix profiles come before `/usr/bin` on PATH, so the macOS HTML Tidy clash goes away. The watch service runs Tidy by its full store path.
-- nixpkgs' `html-tidy` also provides `bin/tidy`, so don't install both into the same profile.
-- On macOS, privacy protection can stop the watch agent reading `~/Desktop`, `~/Documents` or `~/Downloads`. If `~/Library/Logs/tidy-watch.log` shows `Operation not permitted`, give the `tidy` binary Full Disk Access in System Settings → Privacy & Security. Its store path changes with each update, so you'll need to grant it again.
+- The package appends a minimal `git` to `tdy`'s PATH, so the git guard works even where git isn't installed If git is already on your PATH, `withGit = false` drops it and shrinks the closure from about 170 MiB to 55 MiB. Changing these runtime tools only rebuilds a small wrapper, not Tidy itself.
+- The watch service runs `tdy` by its full store path.
+- nixpkgs' `html-tdy` also provides `bin/tdy`, so don't install both into the same profile.
+- On macOS, privacy protection can stop the watch agent reading `~/Desktop`, `~/Documents` or `~/Downloads`. If `~/Library/Logs/tdy-watch.log` shows `Operation not permitted`, give the `tdy` binary Full Disk Access in System Settings → Privacy & Security. Its store path changes with each update, so you'll need to grant it again.
 
 ## Quick start
 
 ```sh
-tidy                           # interactive UI in a terminal (same as `tidy ui .`)
-tidy scan ~                    # where the space goes (dust-style tree)
-tidy top ~ -n 20               # largest files   (--dirs: by bytes held directly)
-tidy plan ~                    # detectors + your policy rules → a plan
-tidy review                    # TUI (or --edit for $EDITOR, or --approve --rule X)
-tidy apply --dry-run           # rehearse: verifies fingerprints, guards, destinations
-tidy apply
-tidy undo                      # reverse what can be reversed
+tdy                           # interactive UI in a terminal (same as `tdy ui .`)
+tdy scan ~                    # where the space goes (dust-style tree)
+tdy top ~ -n 20               # largest files   (--dirs: by bytes held directly)
+tdy plan ~                    # detectors + your policy rules → a plan
+tdy review                    # TUI (or --edit for $EDITOR, or --approve --rule X)
+tdy apply --dry-run           # rehearse: verifies fingerprints, guards, destinations
+tdy apply
+tdy undo                      # reverse what can be reversed
 ```
 
 `latest` is the default plan for `review`, `apply`, `undo` and `show`. You can also pass a plan id or a unique prefix.
 
 ## Interactive UI
 
-`tidy ui [PATH]` opens a full-screen app; so does plain `tidy` in a terminal. It has three screens: switch with `1` `2` `3` or Tab, and `?` lists the keys on each.
+`tdy ui [PATH]` opens a full-screen app; so does plain `tdy` in a terminal. It has three screens: switch with `1` `2` `3` or Tab, and `?` lists the keys on each.
 
 | Screen | What you do there |
 |---|---|
@@ -103,7 +103,7 @@ tidy undo                      # reverse what can be reversed
 | **Plans** | Review any plan: approve, reject, filter, details. `X` applies it after a dry run and your confirmation; `U` undoes it. A log shows each step. |
 | **Cleanup** | Pick a folder and run detectors and policy rules, with live progress (files scanned, items judged, cost). The result opens as a plan. |
 
-Nothing changes on disk until you confirm an apply, which uses the same guards, fingerprint checks and journal as `tidy apply`. Scans, judging and applies run in the background, so the screen stays responsive, and a dialog from a finished job never replaces one you have open. After an apply or undo, Explore shows the change without rescanning (see [Speed](#speed)).
+Nothing changes on disk until you confirm an apply, which uses the same guards, fingerprint checks and journal as `tdy apply`. Scans, judging and applies run in the background, so the screen stays responsive, and a dialog from a finished job never replaces one you have open. After an apply or undo, Explore shows the change without rescanning (see [Speed](#speed)).
 
 ## Commands
 
@@ -111,7 +111,7 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 
 | Command | What it does |
 |---|---|
-| `ui [PATH]` | The interactive UI (also plain `tidy` in a terminal) |
+| `ui [PATH]` | The interactive UI (also plain `tdy` in a terminal) |
 | `scan`, `top`, `diff` | Size tree, largest files/dirs, changes since the last `scan --save`. `--cached` answers from the last scan instead of scanning |
 | `plan [PATHS]` | L1 detectors + L2 policy rules → plan (`--no-rules`, `--no-detectors`, `--show-blocked`) |
 | `plans`, `show` | List plans; print entries (filters: `--rule`, `--action`, `--status`, `--min-p`, `--under`) |
@@ -121,7 +121,7 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 | `dupes [--plan]` | Duplicates (size → sample hash → BLAKE3); the plan clone-dedupes or trashes copies |
 | `archive [--transparent]` | Cold, compressible folders → `.tar.zst` (original quarantined) or APFS/btrfs compression |
 | `watch` | Watch rule scopes; judge new files once they settle; autonomous mode applies right away |
-| `init` | Write an example policy to `~/.config/tidy/policy.toml` |
+| `init` | Write an example policy to `~/.config/tdy/policy.toml` |
 | `presets [NAME]` | List built-in rule presets (● = enabled), or print one to copy and adapt |
 | `policy check`, `policy test` | Validate the policy; run `policy.tests.toml` cases, plus enabled presets' own cases, through the judge |
 | `judge ping`, `judge ask` | Talk to the configured models directly |
@@ -132,7 +132,7 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 
 ## The policy file
 
-`~/.config/tidy/policy.toml`. Run `tidy init` for a commented example.
+`~/.config/tdy/policy.toml`. Run `tdy init` for a commented example.
 
 ```toml
 mode = "manual"            # "autonomous": entries the policy is sure about are pre-approved
@@ -152,7 +152,7 @@ model = "gpt-6-luna"
 api_key_env = "OPENAI_API_KEY"     # read from env, else `fnox get OPENAI_API_KEY`
 
 [subjects]
-me = { refs = ["~/.config/tidy/subjects/me-1.jpg"] }
+me = { refs = ["~/.config/tdy/subjects/me-1.jpg"] }
 
 [[rule]]
 id = "protect.finance"
@@ -193,9 +193,9 @@ to = { pick_from = "~/Documents/*" }    # the judge chooses an existing folder (
 - A permanent `delete` decided by the model is downgraded to `trash` unless the judge also rates the item regenerable (≥ 0.8) and cheap to lose (≤ Minor).
 - Items the judge rates costly to lose, or that land just below a threshold, are proposed but marked **⚠ uncertain**. They stay pending even in autonomous mode.
 
-**Thresholds:** the defaults are 0.8, and 0.15 for keep rules. `tidy calibrate` fits them per rule and per judge to a target precision; the result is stored in `~/.config/tidy/calibration.json`.
+**Thresholds:** the defaults are 0.8, and 0.15 for keep rules. `tdy calibrate` fits them per rule and per judge to a target precision; the result is stored in `~/.config/tdy/calibration.json`.
 
-**Tests for your policy** live in `~/.config/tidy/policy.tests.toml`. Run them with `tidy policy test` (answers are cached, so re-runs are free). `expect` takes a rule id, `none`, `keep` (any keep rule) or a list of these:
+**Tests for your policy** live in `~/.config/tdy/policy.tests.toml`. Run them with `tdy policy test` (answers are cached, so re-runs are free). `expect` takes a rule id, `none`, `keep` (any keep rule) or a list of these:
 
 ```toml
 [[case]]
@@ -216,8 +216,8 @@ Built-in rule packs. All are off until you list them in `presets = [...]`.
 | `archive-leftovers` | trash | no | A `.zip` whose extracted folder next to it holds identical copies of every file |
 | `protect.personal` | keep (removals) | yes | Finance, legal and identity papers, medical records, personal photos and videos, and your own work are never removed. Moves and tags still apply. |
 
-- **Overriding:** a rule of yours with the same `id` replaces the preset's rule. `tidy presets <name>` prints a preset's TOML to start from.
-- **Tests:** each enabled preset adds its own cases to `tidy policy test`, unless you replaced its rule.
+- **Overriding:** a rule of yours with the same `id` replaces the preset's rule. `tdy presets <name>` prints a preset's TOML to start from.
+- **Tests:** each enabled preset adds its own cases to `tdy policy test`, unless you replaced its rule.
 - **`protect.personal`** is off by default. It only asks the model about items a lossy removal rule would touch, so it adds no calls for moves, and none for `archive-leftovers` (whose check proves nothing is lost).
 - **Without a judge:** model-decided rules are skipped with a warning. Deterministic presets (`screenshots`, `archive-leftovers`) still work, and keep rules that can't be answered protect the item.
 
@@ -231,7 +231,7 @@ Built-in rule packs. All are off until you list them in `presets = [...]`.
    - git work trees with uncommitted, unpushed or stashed work; tracked files
    - recent changes (removals: `min_age`; moves: a short settle time)
    - move destinations: never into system, credential, app-data or package locations
-2. **L1 detectors** propose regenerable artifacts only when the marker file is present (`target/` next to `Cargo.toml`, `node_modules` next to `package.json`, a valid `CACHEDIR.TAG`, …). `tidy detectors` lists all of them.
+2. **L1 detectors** propose regenerable artifacts only when the marker file is present (`target/` next to `Cargo.toml`, `node_modules` next to `package.json`, a valid `CACHEDIR.TAG`, …). `tdy detectors` lists all of them.
 3. **L2 rules** go through the judge as described above.
 4. **You approve.** `apply` re-fingerprints every entry (device, inode, size, newest mtime, file count, hash for dedupes) and re-runs the guards. Changed items are skipped.
 
@@ -241,20 +241,20 @@ Built-in rule packs. All are off until you list them in `presets = [...]`.
 - An interrupted cross-volume move never deletes the source unless the destination is intact.
 
 **Reversibility:**
-- `trash` (OS trash), `quarantine` (Tidy's same-volume holding area, purged with `tidy purge`), moves, renames, tags and archives can all be undone.
+- `trash` (OS trash), `quarantine` (Tidy's same-volume holding area, purged with `tdy purge`), moves, renames, tags and archives can all be undone.
 - `delete`, `dedupe` and `compress` are marked `undo ✗`. Dedupe and compress keep the content identical; delete is for regenerable artifacts.
 
 ## Agents (MCP)
 
 ```sh
-claude mcp add tidy -- ~/.cargo/bin/tidy mcp   # Claude Code; any MCP client works
+claude mcp add tdy -- ~/.cargo/bin/tdy mcp   # Claude Code; any MCP client works
 ```
 
-Use the absolute path: an MCP client may start the server with a PATH where macOS's `/usr/bin/tidy` comes first.
+Use the absolute path: an MCP client may start the server with a minimal PATH.
 
-**Tools:** `tidy_scan`, `tidy_top`, `tidy_explain`, `tidy_plan`, `tidy_propose`, `tidy_plans`, `tidy_show_plan`, `tidy_reject`, `tidy_apply`, `tidy_undo`, `tidy_policy_test`, `tidy_dupes`. `tidy_scan` and `tidy_top` take `cached: true` to answer from the last scan.
+**Tools:** `tdy_scan`, `tdy_top`, `tdy_explain`, `tdy_plan`, `tdy_propose`, `tdy_plans`, `tdy_show_plan`, `tdy_reject`, `tdy_apply`, `tdy_undo`, `tdy_policy_test`, `tdy_dupes`. `tdy_scan` and `tdy_top` take `cached: true` to answer from the last scan.
 
-**What agents can do:** propose and reject entries. `tidy_apply` runs only entries a human approved (TUI, editor or CLI), or entries the policy approved in autonomous mode.
+**What agents can do:** propose and reject entries. `tdy_apply` runs only entries a human approved (TUI, editor or CLI), or entries the policy approved in autonomous mode.
 
 ## Platforms
 
@@ -272,11 +272,11 @@ Windows is not supported yet. The `std::fs` fallback reader compiles there but n
 
 ## Benchmarks
 
-`bench/run.sh` compares `tidy scan` with du, dust, dua and gdu using hyperfine, on a generated fixture tree (`tidy-fixture`). On a 2-vCPU Linux VM with a warm cache and 1M files in 100k directories:
+`bench/run.sh` compares `tdy scan` with du, dust, dua and gdu using hyperfine, on a generated fixture tree (`tdy-fixture`). On a 2-vCPU Linux VM with a warm cache and 1M files in 100k directories:
 
 | tool | time | peak RSS |
 |---|---|---|
-| tidy | 1.55 s | 18 MB |
+| tdy | 1.55 s | 18 MB |
 | du | 3.11 s | 2 MB |
 | dust | 3.86 s | 448 MB |
 | gdu | 3.92 s | 26 MB |
@@ -284,20 +284,20 @@ Windows is not supported yet. The `std::fs` fallback reader compiles there but n
 
 ## Speed
 
-Tidy keeps the index of every scan it makes (`~/Library/Caches/tidy` or `~/.cache/tidy`; the newest 64, up to 1 GiB) and keeps it current through its own changes:
+Tidy keeps the index of every scan it makes (`~/Library/Caches/tdy` or `~/.cache/tdy`; the newest 64, up to 1 GiB) and keeps it current through its own changes:
 
-- **Instant start.** `tidy ui` shows the last index at once and refreshes it in the background. `tidy scan --cached` and `tidy top --cached` answer from it and say how old it is. A folder inside a cached one is cut out of the parent's index.
+- **Instant start.** `tdy ui` shows the last index at once and refreshes it in the background. `tdy scan --cached` and `tdy top --cached` answer from it and say how old it is. A folder inside a cached one is cut out of the parent's index.
 - **No rescan after an apply or undo.** Tidy lists the folders an apply or undo touches, before and after, and patches every cached index that covers them. New folders (an undo restoring one, say) are scanned on their own.
 - **Huge folders use every core.** A folder with more than 4,096 entries is read on several threads.
 
 Changes made outside Tidy show up at the next scan; the cached index's age is always shown.
 
-Measured with `tidy-cachebench` and hyperfine on the same 2-vCPU VM, 1M files in 100k folders, warm cache:
+Measured with `tdy-cachebench` and hyperfine on the same 2-vCPU VM, 1M files in 100k folders, warm cache:
 
 | | time |
 |---|---|
 | full scan | 1.8–2.1 s |
-| `tidy scan --cached`, end to end | 9 ms |
+| `tdy scan --cached`, end to end | 9 ms |
 | a 93k-file subfolder: scan / cut out of the cached index | 180–210 ms / 10 ms |
 | after moving 100 folders (40k–98k files) out: rescan / patch | 1.9–2.0 s / 21–25 ms |
 | moving them back: patch, scanning only those folders | 120–340 ms |
@@ -311,6 +311,6 @@ scripts/check-macos.sh        # type-check the macOS paths from Linux
 bench/run.sh                  # needs hyperfine (+ du/dust/dua/gdu if you want them compared)
 ```
 
-Code map: `tidy-scan` (readers, walker, index, snapshots, index cache and patching), `tidy-ops` (fingerprints, trash/quarantine, safe fs ops, dupes/archive/compress, probes), `tidy-plan` (plan model, journal, apply/undo/recover, review), `tidy-rules` (guards, detectors, policy, L2 engine, media), `tidy-judge` (OpenAI Decisions, SystemOne, cache, cascade), `tidy-cli` (CLI, interactive UI, watch, MCP), `tidy-bench` (fixtures, `tidy-cachebench`).
+Code map: `tdy-scan` (readers, walker, index, snapshots, index cache and patching), `tdy-ops` (fingerprints, trash/quarantine, safe fs ops, dupes/archive/compress, probes), `tdy-plan` (plan model, journal, apply/undo/recover, review), `tdy-rules` (guards, detectors, policy, L2 engine, media), `tdy-judge` (OpenAI Decisions, SystemOne, cache, cascade), `tdy-cli` (CLI, interactive UI, watch, MCP), `tdy-bench` (fixtures, `tdy-cachebench`).
 
 Docs: [architecture](docs/architecture.md) (goal, design, dependencies), [assessment](docs/assessment.md) (strengths, weaknesses, future ideas), [design spec](docs/design.md) (original spec and build decisions).

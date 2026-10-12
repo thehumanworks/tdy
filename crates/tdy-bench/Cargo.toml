@@ -1,0 +1,21 @@
+[package]
+name = "tdy-bench"
+description = "Deterministic fixture trees and benchmark helpers for Tidy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "tdy-fixture"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+tdy-scan.workspace = true
+
+[[bin]]
+name = "tdy-cachebench"
+path = "src/cache_bench.rs"

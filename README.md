@@ -99,11 +99,11 @@ tidy undo                      # reverse what can be reversed
 
 | Screen | What you do there |
 |---|---|
-| **Explore** | Browse where the space goes, sorted by size, name, age or item count. Folders come from the scan; files are read when you open their folder. Detectors tag build output and caches. `i` shows sizes and guard verdicts; `E` asks your policy rules. Mark items with space; `t` or `z` turns them into a trash or quarantine plan, approved by you. |
+| **Explore** | Browse where the space goes, sorted by size, name, age or item count. It opens on the index of the last scan at once and refreshes it in the background. Folders come from the index; files are read when you open their folder. Detectors tag build output and caches. `i` shows sizes and guard verdicts; `E` asks your policy rules. Mark items with space; `t` or `z` turns them into a trash or quarantine plan, approved by you. |
 | **Plans** | Review any plan: approve, reject, filter, details. `X` applies it after a dry run and your confirmation; `U` undoes it. A log shows each step. |
 | **Cleanup** | Pick a folder and run detectors and policy rules, with live progress (files scanned, items judged, cost). The result opens as a plan. |
 
-Nothing changes on disk until you confirm an apply, which uses the same guards, fingerprint checks and journal as `tidy apply`. Scans, judging and applies run in the background, so the screen stays responsive, and a dialog from a finished job never replaces one you have open.
+Nothing changes on disk until you confirm an apply, which uses the same guards, fingerprint checks and journal as `tidy apply`. Scans, judging and applies run in the background, so the screen stays responsive, and a dialog from a finished job never replaces one you have open. After an apply or undo, Explore shows the change without rescanning (see [Speed](#speed)).
 
 ## Commands
 
@@ -112,7 +112,7 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 | Command | What it does |
 |---|---|
 | `ui [PATH]` | The interactive UI (also plain `tidy` in a terminal) |
-| `scan`, `top`, `diff` | Size tree, largest files/dirs, changes since the last `scan --save` |
+| `scan`, `top`, `diff` | Size tree, largest files/dirs, changes since the last `scan --save`. `--cached` answers from the last scan instead of scanning |
 | `plan [PATHS]` | L1 detectors + L2 policy rules → plan (`--no-rules`, `--no-detectors`, `--show-blocked`) |
 | `plans`, `show` | List plans; print entries (filters: `--rule`, `--action`, `--status`, `--min-p`, `--under`) |
 | `review` | Approve or reject entries: TUI, `--edit`, `--approve-all`, `--approve/--reject` + filters |
@@ -252,7 +252,7 @@ claude mcp add tidy -- ~/.cargo/bin/tidy mcp   # Claude Code; any MCP client wor
 
 Use the absolute path: an MCP client may start the server with a PATH where macOS's `/usr/bin/tidy` comes first.
 
-**Tools:** `tidy_scan`, `tidy_top`, `tidy_explain`, `tidy_plan`, `tidy_propose`, `tidy_plans`, `tidy_show_plan`, `tidy_reject`, `tidy_apply`, `tidy_undo`, `tidy_policy_test`, `tidy_dupes`.
+**Tools:** `tidy_scan`, `tidy_top`, `tidy_explain`, `tidy_plan`, `tidy_propose`, `tidy_plans`, `tidy_show_plan`, `tidy_reject`, `tidy_apply`, `tidy_undo`, `tidy_policy_test`, `tidy_dupes`. `tidy_scan` and `tidy_top` take `cached: true` to answer from the last scan.
 
 **What agents can do:** propose and reject entries. `tidy_apply` runs only entries a human approved (TUI, editor or CLI), or entries the policy approved in autonomous mode.
 
@@ -282,6 +282,27 @@ Windows is not supported yet. The `std::fs` fallback reader compiles there but n
 | gdu | 3.92 s | 26 MB |
 | dua | 6.23 s | 11 MB |
 
+## Speed
+
+Tidy keeps the index of every scan it makes (`~/Library/Caches/tidy` or `~/.cache/tidy`; the newest 64, up to 1 GiB) and keeps it current through its own changes:
+
+- **Instant start.** `tidy ui` shows the last index at once and refreshes it in the background. `tidy scan --cached` and `tidy top --cached` answer from it and say how old it is. A folder inside a cached one is cut out of the parent's index.
+- **No rescan after an apply or undo.** Tidy lists the folders an apply or undo touches, before and after, and patches every cached index that covers them. New folders (an undo restoring one, say) are scanned on their own.
+- **Huge folders use every core.** A folder with more than 4,096 entries is read on several threads.
+
+Changes made outside Tidy show up at the next scan; the cached index's age is always shown.
+
+Measured with `tidy-cachebench` and hyperfine on the same 2-vCPU VM, 1M files in 100k folders, warm cache:
+
+| | time |
+|---|---|
+| full scan | 1.8–2.1 s |
+| `tidy scan --cached`, end to end | 9 ms |
+| a 93k-file subfolder: scan / cut out of the cached index | 180–210 ms / 10 ms |
+| after moving 100 folders (40k–98k files) out: rescan / patch | 1.9–2.0 s / 21–25 ms |
+| moving them back: patch, scanning only those folders | 120–340 ms |
+| one folder holding 1M files: before / after splitting big folders | 2.95 s / 1.53 s (peak memory 5 → 26 MB) |
+
 ## Development
 
 ```sh
@@ -290,6 +311,6 @@ scripts/check-macos.sh        # type-check the macOS paths from Linux
 bench/run.sh                  # needs hyperfine (+ du/dust/dua/gdu if you want them compared)
 ```
 
-Code map: `tidy-scan` (readers, walker, index, snapshots), `tidy-ops` (fingerprints, trash/quarantine, safe fs ops, dupes/archive/compress, probes), `tidy-plan` (plan model, journal, apply/undo/recover, review), `tidy-rules` (guards, detectors, policy, L2 engine, media), `tidy-judge` (OpenAI Decisions, SystemOne, cache, cascade), `tidy-cli` (CLI, interactive UI, watch, MCP), `tidy-bench` (fixtures).
+Code map: `tidy-scan` (readers, walker, index, snapshots, index cache and patching), `tidy-ops` (fingerprints, trash/quarantine, safe fs ops, dupes/archive/compress, probes), `tidy-plan` (plan model, journal, apply/undo/recover, review), `tidy-rules` (guards, detectors, policy, L2 engine, media), `tidy-judge` (OpenAI Decisions, SystemOne, cache, cascade), `tidy-cli` (CLI, interactive UI, watch, MCP), `tidy-bench` (fixtures, `tidy-cachebench`).
 
 Docs: [architecture](docs/architecture.md) (goal, design, dependencies), [assessment](docs/assessment.md) (strengths, weaknesses, future ideas), [design spec](docs/design.md) (original spec and build decisions).

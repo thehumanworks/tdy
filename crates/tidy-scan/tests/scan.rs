@@ -162,3 +162,39 @@ fn file_root_is_rejected() {
     let e = scan(&t.path().join("a/one.bin"), &ScanOptions::default());
     assert!(e.is_err());
 }
+
+/// A folder big enough to be split across threads must give exactly the
+/// same totals, subfolders, hard-link dedupe and top files as a reference walk.
+#[test]
+fn huge_folders_split_across_threads_match_reference() {
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let big = r.join("big");
+    fs::create_dir_all(&big).unwrap();
+    for i in 0..12_000u32 {
+        write(&big.join(format!("f{i:05}")), (i % 97) as usize * 37);
+    }
+    // subfolders and links among the entries, most of them past the split point
+    for i in 0..40 {
+        let d = big.join(format!("sub{i:02}"));
+        fs::create_dir_all(&d).unwrap();
+        write(&d.join("inner.bin"), 5_000 + i);
+    }
+    write(&big.join("zz-largest.bin"), 900_000);
+    fs::hard_link(big.join("zz-largest.bin"), big.join("zz-largest-link.bin")).unwrap();
+    std::os::unix::fs::symlink("f00001", big.join("zz-symlink")).unwrap();
+
+    let root = fs::canonicalize(r).unwrap();
+    let (files, dirs, logical, alloc) = reference(&root);
+    for threads in [1, 2, 8] {
+        let idx = scan(r, &ScanOptions { threads, top_k: 3, ..Default::default() }).unwrap();
+        let n = idx.root_node();
+        assert_eq!((n.files, n.dirs as u64, n.logical, n.alloc), (files, dirs, logical, alloc), "threads={threads}");
+        assert_eq!(idx.stats.hardlinks_deduped, 1);
+        assert_eq!(idx.stats.symlinks, 1);
+        let b = idx.lookup(&root.join("big")).unwrap();
+        assert_eq!(idx.children(b).len(), 40, "every subfolder is visited");
+        let top = String::from_utf8_lossy(&idx.top_files.iter().max_by_key(|f| f.alloc).unwrap().name).into_owned();
+        assert!(top.starts_with("zz-largest"), "{top}");
+    }
+}

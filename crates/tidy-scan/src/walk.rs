@@ -88,7 +88,20 @@ struct LocalStats {
     others: u64,
     errors: u64,
     hardlinks: u64,
+    /// Files with more than one link, counted (at their first link).
+    linked: u64,
     mounts_skipped: u64,
+}
+
+impl LocalStats {
+    fn add(&mut self, o: &LocalStats) {
+        self.linked += o.linked;
+        self.symlinks += o.symlinks;
+        self.others += o.others;
+        self.errors += o.errors;
+        self.hardlinks += o.hardlinks;
+        self.mounts_skipped += o.mounts_skipped;
+    }
 }
 
 struct TopK {
@@ -101,6 +114,10 @@ struct TopK {
 impl TopK {
     fn new(k: usize, by: SizeKind) -> Self {
         TopK { k, by, items: Vec::with_capacity(k * 2), floor: 0 }
+    }
+    /// Without preallocating (for the many short-lived parts of a split folder).
+    fn lazy(k: usize, by: SizeKind) -> Self {
+        TopK { k, by, items: Vec::new(), floor: 0 }
     }
     #[inline]
     fn would_take(&self, key: u64) -> bool {
@@ -147,6 +164,8 @@ struct Ctx {
     cross_mounts: bool,
     links: Vec<Mutex<FxHashSet<(u64, u64)>>>,
     progress: Option<Arc<ScanProgress>>,
+    top_k: usize,
+    top_by: SizeKind,
 }
 
 impl Ctx {
@@ -160,6 +179,7 @@ impl Ctx {
 /// Scan `root` and build an [`Index`].
 pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
     let started = Instant::now();
+    let started_ms = crate::fmt::now_millis();
     let root = std::fs::canonicalize(root).map_err(|e| ScanError::Root { path: root.to_path_buf(), source: e })?;
     let md = std::fs::metadata(&root).map_err(|e| ScanError::Root { path: root.clone(), source: e })?;
     if !md.is_dir() {
@@ -191,6 +211,8 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
         cross_mounts: opts.cross_mounts,
         links: (0..LINK_SHARDS).map(|_| Mutex::new(FxHashSet::default())).collect(),
         progress: opts.progress.clone(),
+        top_k: opts.top_k,
+        top_by: opts.top_by,
     };
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -212,7 +234,15 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
     let mut nodes = vec![DirNode::default(); n];
     let mut names = Vec::new();
     let mut top_all: Vec<FileHit> = Vec::new();
-    let mut stats = ScanStats { threads, backend: platform::BACKEND, private_measured: opts.private, ..Default::default() };
+    let mut stats = ScanStats {
+        threads,
+        backend: platform::BACKEND,
+        private_measured: opts.private,
+        cross_mounts: opts.cross_mounts,
+        top_k: opts.top_k,
+        started_ms,
+        ..Default::default()
+    };
     for w in ctx.workers {
         let w = w.0.into_inner();
         let base = names.len() as u32;
@@ -226,6 +256,7 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
         stats.others += w.stats.others;
         stats.errors += w.stats.errors;
         stats.hardlinks_deduped += w.stats.hardlinks;
+        stats.linked_files += w.stats.linked;
         stats.mounts_skipped += w.stats.mounts_skipped;
         for s in w.samples {
             if stats.error_samples.len() < 32 {
@@ -262,17 +293,153 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Result<Index, ScanError> {
     Ok(Index::new(root, nodes, names, top_all, by, stats))
 }
 
+/// A folder with more entries than this gets its remaining entries stat-ed
+/// by several threads (Linux; elsewhere the bulk reader returns sizes inline).
+const SPLIT_AT: usize = 4096;
+const SPLIT_CHUNK: usize = 2048;
+
+/// Per-entry accounting into the folder's node, the worker's top-K and
+/// stats, and the list of subfolders to visit.
+struct Acc<'a> {
+    ctx: &'a Ctx,
+    job_id: u32,
+    node: &'a mut DirNode,
+    top: &'a mut TopK,
+    pend: &'a mut Vec<(u32, u32)>,
+    pend_names: &'a mut Vec<u8>,
+    stats: &'a mut LocalStats,
+}
+
+impl Acc<'_> {
+    #[inline]
+    fn entry(&mut self, e: &EntryInfo<'_>) {
+        let (ctx, node) = (self.ctx, &mut *self.node);
+        node.flags |= node_flags::marker(e.name);
+        match e.kind {
+            Kind::Dir => {
+                if !ctx.cross_mounts && e.dev != ctx.root_dev {
+                    node.flags |= node_flags::MOUNT_SKIPPED;
+                    self.stats.mounts_skipped += 1;
+                    return;
+                }
+                // A directory's own inode blocks count toward its parent, like du.
+                node.logical += e.logical;
+                node.alloc += e.alloc;
+                node.private += e.alloc;
+                node.dirs += 1;
+                self.pend.push((self.pend_names.len() as u32, e.name.len() as u32));
+                self.pend_names.extend_from_slice(e.name);
+            }
+            kind => {
+                if e.nlink > 1 && kind == Kind::File {
+                    if !ctx.first_link(e.dev, e.ino) {
+                        self.stats.hardlinks += 1;
+                        return;
+                    }
+                    self.stats.linked += 1;
+                }
+                match kind {
+                    Kind::Symlink => self.stats.symlinks += 1,
+                    Kind::Other => self.stats.others += 1,
+                    _ => {}
+                }
+                // Dataless (cloud placeholder) files occupy no local blocks.
+                let alloc = if e.flags & flags::DATALESS != 0 { 0 } else { e.alloc };
+                let private = e.private.unwrap_or(alloc).min(alloc);
+                node.files += 1;
+                node.logical += e.logical;
+                node.alloc += alloc;
+                node.private += private;
+                node.own_alloc += alloc;
+                if e.mtime > node.mtime_max {
+                    node.mtime_max = e.mtime;
+                }
+                let key = match self.top.by {
+                    SizeKind::Logical => e.logical,
+                    SizeKind::Alloc => alloc,
+                    SizeKind::Private => private,
+                };
+                if kind == Kind::File && self.top.would_take(key) {
+                    self.top.push(FileHit {
+                        dir: self.job_id,
+                        name: e.name.into(),
+                        logical: e.logical,
+                        alloc,
+                        private,
+                        mtime: e.mtime,
+                        flags: e.flags,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The totals of some of a split folder's entries, made off the worker's
+/// lock; parts merge pairwise, so memory stays small however big the folder.
+struct Part {
+    node: DirNode,
+    top: TopK,
+    pend: Vec<(u32, u32)>,
+    pend_names: Vec<u8>,
+    stats: LocalStats,
+}
+
+impl Part {
+    fn new(ctx: &Ctx) -> Self {
+        Part {
+            node: DirNode::default(),
+            top: TopK::lazy(ctx.top_k, ctx.top_by),
+            pend: vec![],
+            pend_names: vec![],
+            stats: LocalStats::default(),
+        }
+    }
+
+    /// Fold `o` into `self`; `top` is any top-K with the scan's settings.
+    fn absorb(node: &mut DirNode, top: &mut TopK, pend: &mut Vec<(u32, u32)>, pend_names: &mut Vec<u8>, stats: &mut LocalStats, o: Part) {
+        let n = &o.node;
+        node.files += n.files;
+        node.dirs += n.dirs;
+        node.logical += n.logical;
+        node.alloc += n.alloc;
+        node.private += n.private;
+        node.own_alloc += n.own_alloc;
+        node.flags |= n.flags;
+        node.mtime_max = node.mtime_max.max(n.mtime_max);
+        let by = top.by;
+        for h in o.top.items {
+            if top.would_take(h.size(by)) {
+                top.push(h);
+            }
+        }
+        for (st, ln) in o.pend {
+            pend.push((pend_names.len() as u32, ln));
+            pend_names.extend_from_slice(&o.pend_names[st as usize..(st + ln) as usize]);
+        }
+        stats.add(&o.stats);
+    }
+
+    fn merge(mut self, o: Part) -> Part {
+        Part::absorb(&mut self.node, &mut self.top, &mut self.pend, &mut self.pend_names, &mut self.stats, o);
+        self.top.compact();
+        self
+    }
+}
+
 fn process<'s>(s: &rayon::Scope<'s>, job: Job, ctx: &'s Ctx) {
     if ctx.progress.as_ref().is_some_and(|p| p.cancelled()) {
         return;
     }
     let wi = rayon::current_thread_index().unwrap_or(0);
-    let mut children: Vec<Job> = Vec::new();
-    {
+    let mut node = DirNode { parent: job.parent, ..Default::default() };
+    // Subfolders to visit, owned by this job (worker scratch would be cleared
+    // by another job if this one has to release the lock).
+    let mut pend: Vec<(u32, u32)>;
+    let mut pend_names: Vec<u8>;
+    let rest = {
         let mut guard = ctx.workers[wi].0.lock();
-        let Worker { reader, nodes, names, top, pend, pend_names, stats, samples } = &mut *guard;
-
-        let mut node = DirNode { parent: job.parent, ..Default::default() };
+        let Worker { reader, nodes: _, names, top, pend: wpend, pend_names: wpend_names, stats, samples } = &mut *guard;
         let name: &[u8] = if job.id == 0 {
             b""
         } else {
@@ -283,85 +450,78 @@ fn process<'s>(s: &rayon::Scope<'s>, job: Job, ctx: &'s Ctx) {
         node.name_off = names.len() as u32;
         node.name_len = name.len().min(u16::MAX as usize) as u16;
         names.extend_from_slice(&name[..node.name_len as usize]);
-        pend.clear();
-        pend_names.clear();
+        wpend.clear();
+        wpend_names.clear();
 
         let cpath = CStr::from_bytes_with_nul(&job.path).expect("nul-terminated job path");
-        let res = reader.read(cpath, &mut |e: &EntryInfo<'_>| {
-            node.flags |= node_flags::marker(e.name);
-            match e.kind {
-                Kind::Dir => {
-                    if !ctx.cross_mounts && e.dev != ctx.root_dev {
-                        node.flags |= node_flags::MOUNT_SKIPPED;
-                        stats.mounts_skipped += 1;
-                        return;
-                    }
-                    // A directory's own inode blocks count toward its parent, like du.
-                    node.logical += e.logical;
-                    node.alloc += e.alloc;
-                    node.private += e.alloc;
-                    node.dirs += 1;
-                    pend.push((pend_names.len() as u32, e.name.len() as u32));
-                    pend_names.extend_from_slice(e.name);
+        let mut acc = Acc { ctx, job_id: job.id, node: &mut node, top, pend: wpend, pend_names: wpend_names, stats };
+        let res = reader.read_split(cpath, SPLIT_AT, &mut |e: &EntryInfo<'_>| acc.entry(e));
+        let rest = match res {
+            Ok(r) => r,
+            Err(err) => {
+                node.flags |= node_flags::UNREADABLE;
+                stats.errors += 1;
+                if samples.len() < 32 {
+                    samples.push(format!("{}: {}", String::from_utf8_lossy(&job.path[..job.path.len() - 1]), err));
                 }
-                kind => {
-                    if e.nlink > 1 && kind == Kind::File && !ctx.first_link(e.dev, e.ino) {
-                        stats.hardlinks += 1;
-                        return;
-                    }
-                    match kind {
-                        Kind::Symlink => stats.symlinks += 1,
-                        Kind::Other => stats.others += 1,
-                        _ => {}
-                    }
-                    // Dataless (cloud placeholder) files occupy no local blocks.
-                    let alloc = if e.flags & flags::DATALESS != 0 { 0 } else { e.alloc };
-                    let private = e.private.unwrap_or(alloc).min(alloc);
-                    node.files += 1;
-                    node.logical += e.logical;
-                    node.alloc += alloc;
-                    node.private += private;
-                    node.own_alloc += alloc;
-                    if e.mtime > node.mtime_max {
-                        node.mtime_max = e.mtime;
-                    }
-                    let key = match top.by {
-                        SizeKind::Logical => e.logical,
-                        SizeKind::Alloc => alloc,
-                        SizeKind::Private => private,
-                    };
-                    if kind == Kind::File && top.would_take(key) {
-                        top.push(FileHit {
-                            dir: job.id,
-                            name: e.name.into(),
-                            logical: e.logical,
-                            alloc,
-                            private,
-                            mtime: e.mtime,
-                            flags: e.flags,
-                        });
-                    }
-                }
+                None
             }
-        });
-        if let Err(err) = res {
-            node.flags |= node_flags::UNREADABLE;
-            stats.errors += 1;
-            if samples.len() < 32 {
-                samples.push(format!("{}: {}", String::from_utf8_lossy(&job.path[..job.path.len() - 1]), err));
-            }
-        }
+        };
+        // Hand the scratch lists to this job; the worker gets fresh ones.
+        pend = std::mem::take(wpend);
+        pend_names = std::mem::take(wpend_names);
+        rest
+    };
+    if let Some(rest) = rest {
+        // The lock is released here: while this thread waits for the chunks,
+        // rayon may run other folders' jobs on it, which take the same lock.
+        use rayon::prelude::*;
+        let n = rest.len();
+        let part = (0..n.div_ceil(SPLIT_CHUNK))
+            .into_par_iter()
+            .map(|c| {
+                let mut p = Part::new(ctx);
+                let mut acc = Acc {
+                    ctx,
+                    job_id: job.id,
+                    node: &mut p.node,
+                    top: &mut p.top,
+                    pend: &mut p.pend,
+                    pend_names: &mut p.pend_names,
+                    stats: &mut p.stats,
+                };
+                rest.stat_range(c * SPLIT_CHUNK..((c + 1) * SPLIT_CHUNK).min(n), &mut |_, e| acc.entry(e));
+                p.top.compact();
+                p
+            })
+            .reduce(|| Part::new(ctx), Part::merge);
+        let wi = rayon::current_thread_index().unwrap_or(0);
+        let mut guard = ctx.workers[wi].0.lock();
+        let Worker { top, stats, .. } = &mut *guard;
+        Part::absorb(&mut node, top, &mut pend, &mut pend_names, stats, part);
+    }
+    let mut children: Vec<Job> = Vec::with_capacity(pend.len());
+    {
+        let wi = rayon::current_thread_index().unwrap_or(0);
+        let mut guard = ctx.workers[wi].0.lock();
+        let w = &mut *guard;
         if let Some(p) = &ctx.progress {
             p.dirs.fetch_add(1, Ordering::Relaxed);
             p.files.fetch_add(node.files, Ordering::Relaxed);
             p.bytes.fetch_add(node.own_alloc, Ordering::Relaxed);
         }
-        nodes.push((job.id, node));
-        children.reserve(pend.len());
+        w.nodes.push((job.id, node));
         for &(st, ln) in pend.iter() {
             let id = ctx.next_id.fetch_add(1, Ordering::Relaxed);
             let nm = &pend_names[st as usize..(st + ln) as usize];
             children.push(Job { id, parent: job.id, path: join_cbytes(&job.path, nm) });
+        }
+        // give the scratch buffers back for the next job on this worker
+        if w.pend.capacity() < pend.capacity() {
+            pend.clear();
+            pend_names.clear();
+            w.pend = pend;
+            w.pend_names = pend_names;
         }
     }
     for c in children {

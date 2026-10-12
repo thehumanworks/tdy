@@ -25,12 +25,14 @@ Every applied entry can be inspected with tidy_show_plan and most can be reverte
 fn tools() -> Value {
     let path = json!({"type": "string", "description": "Absolute path or ~/…"});
     let opt_path = json!({"type": "string", "description": "Absolute path or ~/… (default: the server's current folder)"});
+    let cached = json!({"type": "boolean", "default": false,
+        "description": "Answer from the last scan of this folder (or one above it) when there is one: instant, but as old as `cached.age_secs` says."});
     json!([
         {"name": "tidy_scan", "description": "Scan a directory: totals and the largest subtrees (dust-style).",
-         "inputSchema": {"type": "object", "properties": {"path": opt_path, "lines": {"type": "integer", "default": 20}, "by": {"type": "string", "enum": ["alloc", "logical", "private"], "default": "alloc"}}},
+         "inputSchema": {"type": "object", "properties": {"path": opt_path, "lines": {"type": "integer", "default": 20}, "by": {"type": "string", "enum": ["alloc", "logical", "private"], "default": "alloc"}, "cached": cached}},
          "annotations": {"readOnlyHint": true}},
         {"name": "tidy_top", "description": "Largest files under a path, or directories by bytes held directly (dirs=true).",
-         "inputSchema": {"type": "object", "properties": {"path": opt_path, "lines": {"type": "integer", "default": 20}, "dirs": {"type": "boolean", "default": false}}},
+         "inputSchema": {"type": "object", "properties": {"path": opt_path, "lines": {"type": "integer", "default": 20}, "dirs": {"type": "boolean", "default": false}, "cached": cached}},
          "annotations": {"readOnlyHint": true}},
         {"name": "tidy_explain", "description": "Why a path would or would not be touched: detector match, guard verdicts per action, policy rule probabilities.",
          "inputSchema": {"type": "object", "properties": {"path": path}, "required": ["path"]},
@@ -154,27 +156,44 @@ fn compact(e: &Entry) -> Value {
     })
 }
 
+/// `"cached": true` asks for the last scan instead of a new one.
+fn cached(a: &Value) -> bool {
+    a.get("cached").and_then(Value::as_bool) == Some(true)
+}
+
+fn cached_json(idx: &tidy_scan::Index, from: Option<&std::path::Path>) -> Value {
+    match from {
+        Some(f) => json!({"from": f, "age_secs": tidy_scan::cache::age_secs(idx)}),
+        None => Value::Null,
+    }
+}
+
 pub fn call(name: &str, a: &Value) -> Result<Value> {
     match name {
         "tidy_scan" => {
             let root = canon(s(a, "path").unwrap_or("."))?;
             let by: SizeKind = s(a, "by").unwrap_or("alloc").parse().map_err(anyhow::Error::msg)?;
             let n = a.get("lines").and_then(Value::as_u64).unwrap_or(20) as usize;
-            let idx = tidy_scan::scan(
-                &root,
-                &ScanOptions { top_k: n.max(64), top_by: by, private: by == SizeKind::Private, ..Default::default() },
-            )?;
+            let opts = ScanOptions {
+                top_k: n.max(64),
+                top_by: by,
+                private: by == SizeKind::Private || cfg!(target_os = "macos"),
+                ..Default::default()
+            };
+            let (idx, from) = crate::scan_cmds::index_for(&root, &opts, cached(a))?;
             let r = idx.root_node();
             Ok(
                 json!({"root": idx.root, "logical": r.logical, "alloc": r.alloc, "private": r.private, "files": r.files, "dirs": idx.stats.dirs,
-                      "elapsed_ms": idx.stats.elapsed_ms, "tree": idx.tree(0, n, by, None)}),
+                      "elapsed_ms": idx.stats.elapsed_ms, "cached": cached_json(&idx, from.as_deref()), "tree": idx.tree(0, n, by, None)}),
             )
         }
         "tidy_top" => {
             let root = canon(s(a, "path").unwrap_or("."))?;
             let n = a.get("lines").and_then(Value::as_u64).unwrap_or(20) as usize;
-            let idx = tidy_scan::scan(&root, &ScanOptions { top_k: n, ..Default::default() })?;
-            if a.get("dirs").and_then(Value::as_bool) == Some(true) {
+            let dirs = a.get("dirs").and_then(Value::as_bool) == Some(true);
+            let opts = ScanOptions { top_k: if dirs { 0 } else { n }, ..Default::default() };
+            let (idx, _) = crate::scan_cmds::index_for(&root, &opts, cached(a))?;
+            if dirs {
                 Ok(json!(idx.top_dirs_own(n).into_iter().map(|(id, b)| json!({"path": idx.path(id), "own_alloc": b})).collect::<Vec<_>>()))
             } else {
                 Ok(json!(
@@ -277,7 +296,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             let guard = crate::plan_cmds::apply_guard(&policy);
             let dry = a.get("dry_run").and_then(Value::as_bool) == Some(true);
             let mut events = Vec::new();
-            let r = tidy_plan::apply(&mut plan, &ApplyOptions { dry_run: dry, only: Some(only), verify: true }, &guard, &mut |ev| {
+            let r = tidy_plan::sync::apply(&mut plan, &ApplyOptions { dry_run: dry, only: Some(only), verify: true }, &guard, &mut |ev| {
                 events.push(match ev {
                     tidy_plan::Event::Ok(e, m) => json!({"entry": e.id, "result": "ok", "detail": m}),
                     tidy_plan::Event::Skip(e, m) => json!({"entry": e.id, "result": "skipped", "detail": m}),
@@ -297,7 +316,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
                 Some(plan.entries.iter().filter(|e| ids.iter().any(|w| e.id.starts_with(w.as_str()))).map(|e| e.id.clone()).collect())
             };
             let mut events = Vec::new();
-            let r = tidy_plan::undo(&mut plan, only.as_ref(), &mut |ev| {
+            let r = tidy_plan::sync::undo(&mut plan, only.as_ref(), &mut |ev| {
                 if let tidy_plan::Event::Ok(e, m) | tidy_plan::Event::Skip(e, m) | tidy_plan::Event::Fail(e, m) = ev {
                     events.push(json!({"entry": e.id, "detail": m}));
                 }
@@ -381,6 +400,7 @@ mod tests {
             std::env::set_var("TIDY_HOME", t.path().join("state"));
             std::env::set_var("XDG_DATA_HOME", t.path().join("share"));
             std::env::set_var("TIDY_CONFIG_DIR", t.path().join("cfg"));
+            std::env::set_var("TIDY_CACHE_DIR", t.path().join("cache"));
             std::env::set_var("HOME", t.path());
         }
         let f = t.path().join("victim.bin");

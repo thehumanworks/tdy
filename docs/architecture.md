@@ -62,15 +62,15 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 
 | Crate | Role | Depends on | Lines (src / tests) |
 |---|---|---|---|
-| `tidy-scan` | Platform directory readers, the work-stealing walker, the directory-only index, snapshots, file visitor | — | 1,818 / 148 |
-| `tidy-ops` | Fingerprints, safe filesystem primitives, trash and quarantine, probes (open files, git, cloud, mounts), xattr metadata, space actions | scan | 1,785 / — |
-| `tidy-plan` | Plan model (JSONL), store, fsync'd journal, apply / undo / crash recovery, review helpers | scan, ops | 1,478 / 360 |
+| `tidy-scan` | Platform directory readers, the work-stealing walker, the directory-only index, snapshots, the index cache and patching, file visitor | — | 3,055 / 438 |
+| `tidy-ops` | Fingerprints, safe filesystem primitives, trash and quarantine, probes (open files, git, cloud, mounts), xattr metadata, space actions | scan | 1,845 / — |
+| `tidy-plan` | Plan model (JSONL), store, fsync'd journal, apply / undo / crash recovery, review helpers, keeping cached indexes in step | scan, ops | 1,579 / 412 |
 | `tidy-judge` | Provider-neutral question IR, OpenAI and SystemOne backends, mock, persistent cache, cascade, HTTP with adaptive concurrency | — | 1,129 / — |
-| `tidy-rules` | L0 guards, L1 detectors, policy file and presets, L2 engine, item evidence, rule checks, EXIF and thumbnails, calibration, planner | scan, ops, plan, judge | 3,690 / 463 |
-| `tidy-cli` | The `tidy` binary: commands, the interactive UI (`tidy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 5,887 / — |
-| `tidy-bench` | `tidy-fixture`: deterministic trees for benchmarks | — | 138 / — |
+| `tidy-rules` | L0 guards, L1 detectors, policy file and presets, L2 engine, item evidence, rule checks, EXIF and thumbnails, calibration, planner | scan, ops, plan, judge | 3,712 / 463 |
+| `tidy-cli` | The `tidy` binary: commands, the interactive UI (`tidy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 6,189 / — |
+| `tidy-bench` | `tidy-fixture`: deterministic trees for benchmarks; `tidy-cachebench`: cached starts and patches against rescans | scan | 256 / — |
 
-That is about 16,000 lines of Rust plus about 1,000 lines of integration tests. There are 50 tests in total; unit tests live next to the code.
+That is about 17,800 lines of Rust (counted with `wc -l`) plus about 1,300 lines of integration tests. There are 65 tests in total; unit tests live next to the code.
 
 ## 4. Data flow
 
@@ -124,7 +124,7 @@ recover  on the next apply/undo: reconcile journal + filesystem; never delete a 
 
 `tidy ui [PATH]`, or plain `tidy` in a terminal, runs a ratatui app with three screens:
 
-- **Explore** browses the directory index, sorted by size, name, age or item count. Folders and their totals come from the scan; the files of the folder on screen are read on demand, so memory stays proportional to folders. Each folder found by the detectors carries a detector tag. The details panel shows guard verdicts, computed from the scan's data so there is no second walk. Marked items become a trash or quarantine plan through the same code as MCP proposals (`propose.rs`), but approved by the human.
+- **Explore** browses the directory index, sorted by size, name, age or item count. It shows the cached index (§5.1) at once and replaces it when a background scan finishes; after an apply or undo it reloads the patched index instead of rescanning. Folders and their totals come from the index; the files of the folder on screen are read on demand, so memory stays proportional to folders. Each folder found by the detectors carries a detector tag. The details panel shows guard verdicts, computed from the scan's data so there is no second walk. Marked items become a trash or quarantine plan through the same code as MCP proposals (`propose.rs`), but approved by the human.
 - **Plans** reuses the review component of `tidy review` (`tui.rs`, saving after each change). Apply always runs a dry run first, shows the result, and waits for `y`. Undo also asks first.
 - **Cleanup** runs `plan_detectors` and `policy_entries` on one folder and shows scan and judge progress as they happen.
 
@@ -149,10 +149,12 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 | Linux reader | `open(O_DIRECTORY \| O_NOFOLLOW)` + `getdents64` into a reused buffer, then `statx(AT_STATX_DONT_SYNC)` relative to the directory fd. FIEMAP shared-extent flags give unshared bytes (`--private`) on btrfs and xfs. |
 | macOS reader | `getattrlistbulk` returns name, type, device, file id, flags, mtime, link count, total and allocated size for many entries per syscall. `ATTR_CMNEXT_PRIVATESIZE` gives APFS unshared bytes in the same call. Handles the `ERANGE` retry quirk. |
 | Portable reader | `std::fs` fallback (compiles on Windows; not tuned). |
-| Walker | One rayon job per directory, work-stealing. The worker reading a directory owns its node, so per-file accounting needs no locks. Shared state is limited to an atomic id counter and a sharded hardlink set (touched only when `nlink > 1`); errors are counted per worker. The pool has 2× cores threads, clamped to 4–32, because walking is latency-bound. Never follows symlinks; stays on one device by default. |
+| Walker | One rayon job per directory, work-stealing. The worker reading a directory owns its node, so per-file accounting needs no locks. Shared state is limited to an atomic id counter and a sharded hardlink set (touched only when `nlink > 1`); errors are counted per worker. The pool has 2× cores threads, clamped to 4–32, because walking is latency-bound. Never follows symlinks; stays on one device by default. On Linux, a directory with more than 4,096 entries has the rest stat-ed in chunks of 2,048 on other threads, with the worker's lock released meanwhile (rayon may run other directories on the waiting thread). Each chunk is totalled where it is read (a partial node, top-K and subfolder list) and the partials merge pairwise, so memory stays at the names of the remaining entries (about 20 MB per million). A single 1M-entry directory went from 2.95 s to 1.53 s on 2 vCPU. |
 | Index | Directories only: a flat arena of 64-byte POD `DirNode`s (parent, name offset, flags, dirs, files, logical, allocated, private, own bytes, newest mtime) plus one name buffer. A child's id is always greater than its parent's, so one reverse pass rolls totals up. Files are aggregated into their directory; only per-thread top-K heaps keep the largest files. |
 | Markers | While reading, flags record `CACHEDIR.TAG`, `Cargo.toml`, `package.json`, `pyvenv.cfg`, `.git` and similar. Detectors then need no second pass. |
-| Snapshots | `TIDYIDX\x01` header, JSON header, POD nodes, names, then the top files. Loading is one read plus a cast. One rolling "latest" plus history per root, stored under the cache dir. `tidy diff` compares against it. |
+| Snapshots | `TIDYIDX\x01` header, JSON header, POD nodes, names, then the top files. Loading is one read plus a cast, then a validation pass (every parent before its children, names in bounds). Writes go to a per-process temporary file and are renamed into place. `tidy scan --save` keeps one rolling "latest" plus history per root for `tidy diff`. |
+| Index cache | Every full scan (`scan`, `top`, `diff`, `plan`, the UI, MCP) is also saved as `auto.idx` in its root's cache folder, with at least the 64 largest files: about 7 MB per 100k folders, saved in ~3 ms, loaded in 7–8 ms (`tidy scan --cached` takes 9 ms end to end, against 1.9 s for the scan). `cache::load` takes the newest suitable index: the folder's own, or one cut out of a cached ancestor's (`Index::extract`, ~10 ms for 93k files of a 1M-file index). Writes hold a `flock` on the index's lock file. Suitable means same mount handling, unshared bytes if asked for, and a long enough largest-files list (`ScanStats::top_k`). The newest 64 indexes are kept, up to 1 GiB; the least recently used go first. |
+| Patching | `tidy_plan::sync` wraps every apply and undo (CLI, UI, MCP, watch). Before, `patch::Watch` lists the folder holding each entry and that folder's parent (only inside cached roots), plus the plan's own files and XDG `.trashinfo` files; a folder that compress rewrites in place is marked for a rescan. Afterwards it lists them again, plus where items landed and every folder above that up to the cached root (quarantine creates `<plan>/<entry>/`). `Index::patch` plans first and changes nothing unless every folder checks out. A folder the index still matched before the change gets the before→after difference; one the index had fallen behind on, or only seen afterwards, is set to what is there now. Subfolders that disappeared are dropped (compacting the arena, so ids stay parent-first); new ones, or ones replaced under the same name (a different inode), are scanned and grafted on. Hard links refuse the patch (where a linked file counts is a scan's call), as does a rewritten root. `cache::sync` then, under the lock: leaves alone an index scanned after the change, drops one scanned while it ran or one the patch refused, and patches the rest. Moving 100 folders (40k–98k files) out of a 1M-file index: 21–25 ms, against 1.9–2.0 s to rescan. |
 
 ### 5.2 Filesystem operations (`tidy-ops`)
 
@@ -290,7 +292,7 @@ There is no async runtime: network I/O is the only blocking wait that matters, a
 | Quarantine | `<data>/quarantine/<plan>/<entry>/`, or `<volume>/.tidy-quarantine/<uid>` | `TIDY_HOME` |
 | Quarantine roots on other volumes | `<data>/quarantine-roots` | `TIDY_HOME` |
 | Decision cache | `<data>/decisions/<judge-hash>.jsonl` | `TIDY_HOME` |
-| Snapshots | `<cache>/snapshots/<root-hash>/` | `TIDY_CACHE_DIR`, `XDG_CACHE_HOME` |
+| Index cache, snapshots | `<cache>/snapshots/<root-hash>/` (`auto.idx`; `latest.idx` and history from `scan --save`) | `TIDY_CACHE_DIR`, `XDG_CACHE_HOME` |
 
 `<data>` is `~/Library/Application Support/tidy` on macOS and `$XDG_DATA_HOME/tidy` (default `~/.local/share/tidy`) on Linux. `<cache>` is `~/Library/Caches/tidy` on macOS and `~/.cache/tidy` on Linux.
 
@@ -371,15 +373,16 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
 
 ## 10. Testing and tooling
 
-- `cargo test` runs 50 tests:
-  - scanner (totals against a reference walk and `du`, lookups and top files, snapshot round-trip and diff)
+- `cargo test` runs 65 tests:
+  - scanner (totals against a reference walk and `du`, lookups and top files, snapshot round-trip and diff, a 12,000-entry folder split across 1, 2 and 8 threads)
+  - index cache and patching, each checked folder by folder against a fresh scan: cache round trip and choice of index, cut-outs, patches after removals, renames, new nested folders and restores, folders rewritten or replaced under the same name, an index that had fallen behind, landing in folders the change created, hard links (refused), and syncing cached indexes, including a scan that ran during the change
   - filesystem ops (trash and quarantine round-trips, symlink safety, mount listing, drift detection, dupes and archives, bplist and tags)
-  - plans (10 tests: apply/undo round-trips, stale entries, crash recovery including an interrupted cross-volume move, dry runs, the editor format)
+  - plans (11 tests: apply/undo round-trips, stale entries, crash recovery including an interrupted cross-volume move, dry runs, the editor format, the cached index after apply and undo)
   - judges (body/parse against the docs, cache, split)
   - L2 semantics with scripted judges
   - presets end to end
   - MCP approval enforcement
-  - the interactive UI, headless (ratatui test backend): browse, mark, plan, dry run, apply, undo, cleanup, dialog queueing and keystroke safety, non-UTF-8 names
+  - the interactive UI, headless (ratatui test backend): browse, mark, plan, dry run, apply and undo shown without a rescan, starting from the cached index, cleanup, dialog queueing and keystroke safety, non-UTF-8 names
 - `flake.nix` packages Tidy for Nix (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`) and provides an overlay, a NixOS/nix-darwin module, a home-manager module (policy written and checked at build time, `tidy watch` as a systemd or launchd user service) and a dev shell. `nix flake check` builds the package, runs the tests in the build sandbox, and checks Rust and Nix formatting. Files are in `nix/`.
 - `scripts/install.sh` runs `cargo install` (tuned for the CPU unless `--portable`) and checks that `tidy` on PATH is this binary, not macOS's `/usr/bin/tidy` (HTML Tidy).
 - `scripts/check-macos.sh` type-checks the macOS code paths from Linux (`aarch64-apple-darwin`) with a stub C compiler.

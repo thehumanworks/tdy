@@ -8,11 +8,11 @@ pub mod macos;
 pub mod portable;
 
 #[cfg(target_os = "linux")]
-pub use linux::{Reader, supports_sharing};
+pub use linux::{Reader, Rest, supports_sharing};
 #[cfg(target_os = "macos")]
-pub use macos::{Reader, supports_sharing};
+pub use macos::{Reader, Rest, supports_sharing};
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub use portable::{Reader, supports_sharing};
+pub use portable::{Reader, Rest, supports_sharing};
 
 /// Name of the active fast-path backend, for diagnostics.
 pub const BACKEND: &str = if cfg!(target_os = "linux") {

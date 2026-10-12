@@ -63,7 +63,38 @@ pub struct Reader {
     opts: ReadOptions,
 }
 
+/// Never constructed on this platform: `read_split` stats every entry
+/// itself (bulk attribute reads return sizes with the names).
+pub struct Rest {
+    _never: std::convert::Infallible,
+}
+
+impl Rest {
+    pub fn len(&self) -> usize {
+        match self._never {}
+    }
+    pub fn is_empty(&self) -> bool {
+        match self._never {}
+    }
+    pub fn name(&self, _i: usize) -> &[u8] {
+        match self._never {}
+    }
+    pub fn stat_range(&self, _range: std::ops::Range<usize>, _f: &mut dyn FnMut(usize, &crate::entry::EntryInfo<'_>)) {
+        match self._never {}
+    }
+}
+
 impl Reader {
+    /// Same as `read` here; see the Linux reader for the parallel split.
+    pub fn read_split(
+        &mut self,
+        path: &std::ffi::CStr,
+        _inline: usize,
+        f: &mut dyn FnMut(&crate::entry::EntryInfo<'_>),
+    ) -> std::io::Result<Option<Rest>> {
+        self.read(path, f).map(|_| None)
+    }
+
     pub fn new(opts: ReadOptions) -> Self {
         Reader { buf: vec![0u64; BULK_BUF / 8], opts }
     }

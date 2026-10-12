@@ -65,7 +65,8 @@ pub fn parse_duration(s: &str) -> Option<i64> {
 pub fn age(secs: i64) -> String {
     let s = secs.max(0);
     match s {
-        0..=3599 => format!("{}m", s / 60),
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m", s / 60),
         3600..=86_399 => format!("{}h", s / 3600),
         86_400..=2_591_999 => format!("{}d", s / 86_400),
         2_592_000..=31_535_999 => format!("{}mo", s / 2_592_000),
@@ -75,6 +76,10 @@ pub fn age(secs: i64) -> String {
 
 pub fn now_secs() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+pub fn now_millis() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 #[cfg(test)]

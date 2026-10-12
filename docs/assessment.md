@@ -26,6 +26,11 @@ An honest look at v0.1 (October 2026). Numbers come from the benchmark and live 
   | dua | 6.56 s | 10.3 MiB |
 
 - **Memory scales with directories, not files.** It uses 64 bytes per directory plus names, and 151 MB at 11M entries.
+- **Scans are reused, not repeated.** On the same 1M-file tree:
+  - The index of every scan is cached. `tidy ui` shows it in 7–8 ms (a scan takes 1.8–2.1 s) and refreshes in the background; `tidy scan --cached` answers in 9 ms; a folder inside a cached one is cut out of its index in 10 ms instead of a 180–210 ms scan.
+  - Applies and undos patch the cached indexes instead of forcing a rescan: moving 100 folders (40k–98k files) out took 21–25 ms, against 1.9–2.0 s to rescan. Moving them back scans just those folders.
+  - A patch that can't be exact (hard links, a rewritten root, a scan that ran during the change) drops the cached index instead, so the next look rescans. Every patch and cut-out is tested folder by folder against a fresh scan.
+- **Huge folders use every core.** A folder with 1M entries scans in 1.53 s instead of 2.95 s on 2 vCPU (Linux), at 26 MB peak memory.
 - **Lean runtime.** No async runtime and no background daemon unless you start `tidy watch`. One 7.7 MB binary.
 - **Platform-native.** It uses each platform's own mechanism instead of a lowest-common-denominator copy:
   - bulk directory reads (`getattrlistbulk`, `getdents64` + `statx`)
@@ -71,30 +76,33 @@ Ranked by impact on you today.
 | 4 | **Privacy of evidence.** File names, home-relative paths and download URLs go to a third-party API for every judged item. Only the home prefix is redacted. Content excerpts and thumbnails are opt-in, except that a criterion mentioning a subject (`{me}`) always sends the item's thumbnail. | Medium–high for sensitive folders | `items::evidence_with` |
 | 5 | **Uncalibrated by default.** Thresholds (0.8, 0.15 for keep) are defaults until you label items. The first `protect.personal` wording over-protected installers until reworded. A provider silently changing a model under the same name would leave stale cached answers. | Medium | `policy test` history; cache keyed by judge id |
 | 6 | **SystemOne backends are untested live** (Jev, Clef). Only request/response shapes are tested against the documentation. | Medium (only if you switch provider) | `body_and_parse_match_docs` |
-| 7 | **L2 item listing is sequential.** Each rule scope is listed on one thread, to depth 64 for file rules without a `depth`, and doesn't reuse the parallel walker or a saved index. A broad scope like `~` is slow. | Medium | `items::list`, `l2::collect` |
-| 8 | **Decision cache grows forever.** Append-only JSONL, loaded fully into memory at start, with no compaction or TTL. | Low now; grows with use | `Cached::open` |
-| 9 | **Apply is sequential.** One entry at a time, rewriting the whole plan every 64 entries. Fine for hundreds of entries; slow for 100k dedupes. | Low–medium | `exec::apply` |
-| 10 | **Watch mode limits.** It runs in the foreground, with no launchd or systemd unit. Changes made while it isn't running are missed (no FSEvents event-id resume). Linux inotify needs one watch per directory. | Medium for autonomous use | `watch.rs` |
-| 11 | **Presets are English and default-path only.** Localised macOS screenshot names and custom capture folders aren't recognised. `installers` includes `.zip` and relies on the model to tell app zips from personal archives. | Low–medium | `presets.rs` |
-| 12 | **Thin CLI test coverage.** `tidy-cli` has tests for MCP approval and the interactive UI only. `policy test`, `calibrate` and `watch` were only checked by hand or in live runs. Parsers for untrusted input (zip central directory, bplist, `getattrlistbulk` buffers) are bounds-checked but not fuzzed. | Medium | 50 tests in total; 6 in `tidy-cli` |
-| 13 | **Hard-coded judge prices.** Cost estimates will drift as prices change. | Low | `price_per_mtok` |
-| 14 | **Some actions are one-way.** `delete`, `dedupe` and `compress` can't be undone. Dedupe and compress keep content identical, and `delete` is kept for regenerable artefacts. | Low | `undo ✗` in plans |
-| 15 | **Dependency weight.** 174 packages in the dependency graph (image decoders, TUI, TLS, notify), which is heavy for a "frugal" tool. `memmap2` is declared in the workspace but not used directly. | Low | `cargo tree` |
-| 16 | **Gaps from the spec.** Per-rule judges are accepted but ignored, with a warning. No video keyframes, no PGO, no io_uring batching, no Windows. | Low | `judge_cmds.rs`, design.md |
+| 7 | **L2 item listing is sequential.** Each rule scope is listed on one thread, to depth 64 for file rules without a `depth`, and doesn't reuse the parallel walker or the cached index. A broad scope like `~` is slow. | Medium | `items::list`, `l2::collect` |
+| 8 | **The cached index only follows Tidy's own changes.** Anything else that changes on disk shows up at the next scan. The UI refreshes on every start and `--cached` prints the index's age, but nothing tells Tidy what changed in between (FSEvents history would, on macOS). Patches have small known gaps: a newest-change time only moves forward until the next scan, a folder replaced under the same name is only noticed if Tidy saw it before the change, Tidy's own cache files aren't followed, and on Linux unshared bytes follow allocated bytes. | Low–medium | `patch.rs` |
+| 9 | **Decision cache grows forever.** Append-only JSONL, loaded fully into memory at start, with no compaction or TTL. | Low now; grows with use | `Cached::open` |
+| 10 | **Apply is sequential.** One entry at a time, rewriting the whole plan every 64 entries. Fine for hundreds of entries; slow for 100k dedupes. | Low–medium | `exec::apply` |
+| 11 | **Watch mode limits.** It runs in the foreground, with no launchd or systemd unit. Changes made while it isn't running are missed (no FSEvents event-id resume). Linux inotify needs one watch per directory. | Medium for autonomous use | `watch.rs` |
+| 12 | **Presets are English and default-path only.** Localised macOS screenshot names and custom capture folders aren't recognised. `installers` includes `.zip` and relies on the model to tell app zips from personal archives. | Low–medium | `presets.rs` |
+| 13 | **Thin CLI test coverage.** `tidy-cli` has tests for MCP approval and the interactive UI only. `policy test`, `calibrate` and `watch` were only checked by hand or in live runs. Parsers for untrusted input (zip central directory, bplist, `getattrlistbulk` buffers, cached index files) are bounds-checked but not fuzzed. | Medium | 65 tests in total; 8 in `tidy-cli` |
+| 14 | **Hard-coded judge prices.** Cost estimates will drift as prices change. | Low | `price_per_mtok` |
+| 15 | **Some actions are one-way.** `delete`, `dedupe` and `compress` can't be undone. Dedupe and compress keep content identical, and `delete` is kept for regenerable artefacts. | Low | `undo ✗` in plans |
+| 16 | **Dependency weight.** 174 packages in the dependency graph (image decoders, TUI, TLS, notify), which is heavy for a "frugal" tool. `memmap2` is declared in the workspace but not used directly. | Low | `cargo tree` |
+| 17 | **Gaps from the spec.** Per-rule judges are accepted but ignored, with a warning. No video keyframes, no PGO, no Windows. io_uring `statx` batching was tried and dropped: it measured 1.7–2.3× slower than plain `statx` on warm metadata. | Low | `judge_cmds.rs`, design.md |
 
 ## Future ideas
 
 ### Now: prove it on the Mac and lock it in
 1. **Run the full suite and benchmarks on macOS (APFS)** and fix what breaks: reader, private bytes, `clonefile`, decmpfs, Finder tags, trash, FSEvents.
 2. **CI matrix:** GitHub Actions on macOS (arm64) and Linux (ext4 plus an xfs or btrfs loop device). Run `nix flake check` (build, tests, formatting), clippy, `check-macos.sh` and a small benchmark smoke test.
-3. **Fuzz the parsers** with `cargo-fuzz`: zip central directory, bplist, `getattrlistbulk` decoding, journal recovery.
+3. **Fuzz the parsers** with `cargo-fuzz`: zip central directory, bplist, `getattrlistbulk` decoding, cached index files, journal recovery.
 4. **Cache hygiene:** compaction, a TTL or size cap, and prices read from config.
 
 ### Next: capability
 - **One scan feeds L1 and L2.** List rule scopes with the parallel walker, or from a fresh snapshot, instead of sequential reads.
 - **Parallel apply.** Per-volume queues for independent entries, with the journal still ordered per entry.
-- **Incremental everything.**
-  - FSEvents `sinceWhen` event ids plus the saved index give near-instant rescans.
+- **Incremental everything.** Done: the index cache, cut-outs and patches after applies and undos. Next:
+  - FSEvents `sinceWhen` event ids (macOS) say which folders changed since the cached index, so a refresh rescans only those. Linux has no unprivileged equivalent, so it keeps the background refresh.
+  - Live totals: Explore fills in sizes while the first scan runs.
+  - A content-hash cache keyed by (dev, inode, size, mtime), so `dupes` re-hashes only new or changed files.
   - launchd and systemd units turn `tidy watch` into a quiet background service.
 - **More lossless checks.** Each one lets `protect.personal` stay on without blocking safe cleanups:
   - `installed-app`: a `.dmg` or `.pkg` whose app, at the same or a newer version, is already in `/Applications`
@@ -117,7 +125,7 @@ Ranked by impact on you today.
 - **Lean builds.** Feature-gate the image decoders and the TUI; drop the direct `memmap2` declaration or use it for snapshots.
 
 ### Later
-- **Performance:** PGO via `cargo-pgo`, and io_uring `statx` batching on Linux.
+- **Performance:** PGO via `cargo-pgo`.
 - **Routines:** scheduled plans and a weekly "what changed / what's reclaimable" report.
 - **Agents:** plans exposed as MCP resources, and a streamable HTTP transport.
 - **Windows:** NTFS reader, Recycle Bin, ReFS block cloning.

@@ -19,6 +19,7 @@ fn home() -> &'static Path {
             std::env::set_var("XDG_DATA_HOME", t.path().join("share"));
             // Keep the OS trash (~/.Trash on macOS) inside the sandbox too.
             std::env::set_var("HOME", t.path());
+            std::env::set_var("TIDY_CACHE_DIR", t.path().join("cache"));
         }
         fs::create_dir_all(t.path().join("share")).unwrap();
         t
@@ -111,8 +112,13 @@ fn no_guard(_: &Entry) -> Result<(), String> {
     Ok(())
 }
 
+/// Tests that check the shared trash is left empty, or trash and restore
+/// themselves, take turns.
+static TRASH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn apply_then_undo_restores_byte_for_byte() {
+    let _t = TRASH.lock().unwrap_or_else(|e| e.into_inner());
     let _ = home();
     let t = tempfile::tempdir_in(home()).unwrap();
     let root = t.path().join("tree");
@@ -357,4 +363,56 @@ fn dry_run_does_not_recover() {
     assert!(notes[0].contains("interrupted"));
     assert_eq!(plan.entries[0].status, Status::Approved);
     assert!(root.join("proj/target").exists());
+}
+
+/// The cached index equals a fresh scan, folder by folder.
+fn cache_matches_disk(root: &Path, ctx: &str) {
+    use tidy_scan::{ScanOptions, cache, scan};
+    let opts = ScanOptions { top_k: 0, ..Default::default() };
+    let got = cache::load(root, &opts).expect("cached").index;
+    let want = scan(root, &opts).unwrap();
+    assert_eq!(got.nodes.len(), want.nodes.len(), "{ctx}: folder count");
+    for i in 0..want.nodes.len() as u32 {
+        let p = want.path(i);
+        let j = got.lookup(&p).unwrap_or_else(|| panic!("{ctx}: {} missing", p.display()));
+        let (a, b) = (&got.nodes[j as usize], &want.nodes[i as usize]);
+        assert_eq!(
+            (a.files, a.dirs, a.logical, a.alloc, a.flags),
+            (b.files, b.dirs, b.logical, b.alloc, b.flags),
+            "{ctx}: {}",
+            p.display()
+        );
+    }
+}
+
+#[test]
+fn cached_index_follows_apply_and_undo() {
+    use tidy_plan::sync::{self, Op};
+    let _t = TRASH.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = home();
+    let t = tempfile::tempdir_in(home()).unwrap();
+    let root = fs::canonicalize(t.path()).unwrap().join("tree");
+    fixture(&root);
+    tidy_scan::cache::store(&tidy_scan::scan(&root, &Default::default()).unwrap()).unwrap();
+    let mut taken = HashSet::new();
+    // (the copy goes first: moving a photo out changes the folder it copies)
+    let entries = vec![
+        entry(&root.join("photos"), Action::Copy, Some(root.join("photos-copy")), &mut taken),
+        entry(&root.join("downloads/Figma.dmg"), Action::Trash, None, &mut taken),
+        entry(&root.join("proj/target"), Action::Trash, None, &mut taken),
+        entry(&root.join("photos/IMG_1.jpg"), Action::Move, Some(root.join("sorted/dogs/IMG_1.jpg")), &mut taken),
+        entry(&root.join("downloads/notes.txt"), Action::Quarantine, None, &mut taken),
+    ];
+    let mut plan = new_plan(&root, entries);
+    let tr = sync::watch(&plan, Op::Apply, None);
+    let r = apply(&mut plan, &ApplyOptions { verify: true, ..Default::default() }, &no_guard, &mut |_| {}).unwrap();
+    assert_eq!(r.applied, 5);
+    let s = tr.finish(&plan);
+    assert_eq!((s.patched, s.dropped), (1, 0));
+    cache_matches_disk(&root, "after apply");
+
+    let tr = sync::watch(&plan, Op::Undo, None);
+    assert_eq!(undo(&mut plan, None, &mut |_| {}).unwrap().undone, 5);
+    assert_eq!(tr.finish(&plan).patched, 1);
+    cache_matches_disk(&root, "after undo");
 }

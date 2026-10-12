@@ -191,7 +191,7 @@ pub fn cmd_watch(c: WatchCmd) -> Result<()> {
         if plan.entries.iter().any(|e| ids.contains(&e.id) && e.status == Status::Approved) {
             let guard = crate::plan_cmds::apply_guard_with(gc.clone());
             let opts = ApplyOptions { dry_run: false, only: Some(ids), verify: true };
-            let r = tidy_plan::apply(&mut plan, &opts, &guard, &mut |ev| {
+            let r = tidy_plan::sync::apply(&mut plan, &opts, &guard, &mut |ev| {
                 if let tidy_plan::Event::Ok(e, m) = ev {
                     println!("    {} {} {}", ui::green("✓"), e.id, m.replace(&tidy_scan::path::home_dir().display().to_string(), "~"));
                 }

@@ -3,8 +3,8 @@
 use crate::ui;
 use anyhow::{Context, Result};
 use clap::Args;
-use std::path::PathBuf;
-use tidy_scan::{ScanOptions, SizeKind, fmt, path, snapshot};
+use std::path::{Path, PathBuf};
+use tidy_scan::{Index, ScanOptions, SizeKind, cache, fmt, path, snapshot};
 
 #[derive(Args, Clone)]
 pub struct ScanArgs {
@@ -30,7 +30,8 @@ pub struct ScanArgs {
 
 impl ScanArgs {
     pub fn options(&self, top_k: usize) -> ScanOptions {
-        let private = self.private || self.by == SizeKind::Private;
+        // Unshared bytes come in the same call on APFS, so always take them there.
+        let private = self.private || self.by == SizeKind::Private || cfg!(target_os = "macos");
         ScanOptions { threads: self.threads, cross_mounts: self.cross_mounts, private, top_k, top_by: self.by, progress: None }
     }
     pub fn root(&self) -> PathBuf {
@@ -54,6 +55,10 @@ pub struct ScanCmd {
     /// Only print the summary line.
     #[arg(short, long)]
     quiet: bool,
+    /// Answer from the last scan of this folder (or of a folder above it)
+    /// if there is one, instead of scanning. Says how old it is.
+    #[arg(long)]
+    cached: bool,
 }
 
 #[derive(Args)]
@@ -65,6 +70,10 @@ pub struct TopCmd {
     /// Rank directories by bytes of files directly inside them.
     #[arg(long)]
     dirs: bool,
+    /// Answer from the last scan of this folder (or of a folder above it)
+    /// if there is one, instead of scanning.
+    #[arg(long)]
+    cached: bool,
 }
 
 #[derive(Args)]
@@ -78,6 +87,41 @@ pub struct DiffCmd {
     min: String,
 }
 
+/// Scan `root` and keep the index in the cache (best effort). At least the
+/// 64 largest files are kept, so the cached index can answer `tidy scan`
+/// and `tidy top` later.
+pub fn scan_and_keep(root: &Path, opts: &ScanOptions) -> Result<Index> {
+    let opts = ScanOptions { top_k: opts.top_k.max(CACHED_TOP), ..opts.clone() };
+    let idx = tidy_scan::scan(root, &opts).with_context(|| format!("scanning {}", root.display()))?;
+    keep(&idx);
+    Ok(idx)
+}
+
+/// Largest files every cached scan keeps (cheap: a bounded heap per thread).
+pub const CACHED_TOP: usize = 64;
+
+/// Keep a full scan's index in the cache; a failure only costs speed later.
+pub fn keep(idx: &Index) {
+    if let Err(e) = cache::store(idx) {
+        eprintln!("{}", ui::dim(&format!("could not cache the index: {e}")));
+    }
+}
+
+/// The cached index when `cached` and there is one that fits; otherwise a
+/// fresh scan (which is then cached).
+pub fn index_for(root: &Path, opts: &ScanOptions, cached: bool) -> Result<(Index, Option<PathBuf>)> {
+    if cached && let Some(c) = cache::load(root, opts) {
+        return Ok((c.index, Some(c.from)));
+    }
+    Ok((scan_and_keep(root, opts)?, None))
+}
+
+/// `from the index of ~/x, 3 min ago — without --cached to rescan`
+fn cached_note(idx: &Index, from: &Path) -> String {
+    let src = if from == idx.root { String::new() } else { format!(" of {}", path::display_path(from)) };
+    format!("from the cached index{src}, scanned {} ago — run without --cached to rescan", fmt::age(cache::age_secs(idx)))
+}
+
 pub fn summary(idx: &tidy_scan::Index, by: SizeKind) -> String {
     let s = &idx.stats;
     let entries = s.files + s.dirs;
@@ -87,7 +131,11 @@ pub fn summary(idx: &tidy_scan::Index, by: SizeKind) -> String {
         format!("{} {}", fmt::bytes(root.size(by)), by_label(by)),
         format!("{} files", ui::thousands(s.files)),
         format!("{} dirs", ui::thousands(s.dirs)),
-        format!("{:.2}s ({}/s, {} threads, {})", s.elapsed_ms as f64 / 1000.0, ui::thousands(rate as u64), s.threads, s.backend),
+        if s.backend == "cache" {
+            format!("cached {} ago", fmt::age(cache::age_secs(idx)))
+        } else {
+            format!("{:.2}s ({}/s, {} threads, {})", s.elapsed_ms as f64 / 1000.0, ui::thousands(rate as u64), s.threads, s.backend)
+        },
     ];
     if by != SizeKind::Logical {
         parts.insert(1, format!("{} apparent", fmt::bytes(root.logical)));
@@ -114,7 +162,7 @@ fn by_label(by: SizeKind) -> &'static str {
 
 pub fn cmd_scan(c: ScanCmd) -> Result<()> {
     let root = c.scan.root();
-    let idx = tidy_scan::scan(&root, &c.scan.options(c.lines.max(64))).with_context(|| format!("scanning {}", root.display()))?;
+    let (idx, from) = index_for(&root, &c.scan.options(c.lines.max(64)), c.cached)?;
     if c.save {
         let ts = fmt::now_secs();
         snapshot::save(&idx, &snapshot::snapshot_path(&idx.root, None))?;
@@ -129,6 +177,7 @@ pub fn cmd_scan(c: ScanCmd) -> Result<()> {
             "totals": { "logical": idx.root_node().logical, "alloc": idx.root_node().alloc, "private": idx.root_node().private,
                         "files": idx.stats.files, "dirs": idx.stats.dirs },
             "stats": idx.stats,
+            "cached": from.as_ref().map(|f| serde_json::json!({"from": f, "age_secs": cache::age_secs(&idx)})),
             "tree": rows,
         });
         println!("{}", serde_json::to_string(&out)?);
@@ -138,6 +187,9 @@ pub fn cmd_scan(c: ScanCmd) -> Result<()> {
     if !c.quiet {
         ui::print_tree(&idx.tree(0, c.lines, by, c.depth));
     }
+    if let Some(f) = &from {
+        eprintln!("{}", ui::dim(&cached_note(&idx, f)));
+    }
     for e in idx.stats.error_samples.iter().take(3) {
         eprintln!("{}", ui::dim(&format!("unreadable: {e}")));
     }
@@ -146,7 +198,14 @@ pub fn cmd_scan(c: ScanCmd) -> Result<()> {
 
 pub fn cmd_top(c: TopCmd) -> Result<()> {
     let root = c.scan.root();
-    let idx = tidy_scan::scan(&root, &c.scan.options(c.lines.max(1))).with_context(|| format!("scanning {}", root.display()))?;
+    // `--dirs` reads folders only, so any cached largest-files list will do
+    let k = if c.dirs { 0 } else { c.lines.max(1) };
+    let (idx, from) = index_for(&root, &c.scan.options(k), c.cached)?;
+    if let Some(f) = &from
+        && !c.scan.json
+    {
+        eprintln!("{}", ui::dim(&cached_note(&idx, f)));
+    }
     let by = c.scan.by;
     let now = fmt::now_secs();
     if c.dirs {
@@ -183,7 +242,7 @@ pub fn cmd_diff(c: DiffCmd) -> Result<()> {
     let root = std::fs::canonicalize(c.scan.root())?;
     let snap = snapshot::snapshot_path(&root, None);
     let old = snapshot::load(&snap).with_context(|| format!("no snapshot for {} — run `tidy scan --save` first", root.display()))?;
-    let idx = tidy_scan::scan(&root, &c.scan.options(64))?;
+    let idx = scan_and_keep(&root, &c.scan.options(64))?;
     let min = fmt::parse_bytes(&c.min).context("--min")?;
     let changes = tidy_scan::snapshot::diff(&old.index, &idx, c.scan.by, min);
     // Collapse an ancestor into its descendant when the descendant explains

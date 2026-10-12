@@ -147,8 +147,13 @@ fn explore_mark_plan_apply_undo() {
     pump(&mut app, "the apply", |a| a.plans.busy.is_none() && a.toast.as_ref().is_some_and(|(t, _)| t.contains("applied")));
     assert!(!root.join("big").exists(), "moved to the trash");
     assert!(t.path().join("share/Trash/files/big").exists());
-    assert!(app.explore.stale);
     assert_eq!(app.plans.review.as_ref().unwrap().plan.entries[0].status, tidy_plan::Status::Applied);
+    // Explore shows the change without a rescan: the cached index was patched
+    pump(&mut app, "the patched index", |a| a.explore.patched);
+    assert!(app.explore.scanning.is_none() && !app.explore.stale);
+    let idx = app.explore.index.as_ref().unwrap();
+    assert!(idx.lookup(&root.join("big")).is_none());
+    assert_eq!(idx.root_node().files, 2);
 
     // undo, confirmed
     ch(&mut app, 'U');
@@ -156,6 +161,9 @@ fn explore_mark_plan_apply_undo() {
     ch(&mut app, 'y');
     pump(&mut app, "the undo", |a| a.plans.busy.is_none() && a.toast.as_ref().is_some_and(|(t, _)| t.contains("restored")));
     assert!(root.join("big/movie.bin").exists());
+    pump(&mut app, "the restored folder", |a| a.explore.index.as_ref().is_some_and(|i| i.lookup(&root.join("big")).is_some()));
+    assert!(app.explore.patched && app.explore.scanning.is_none());
+    assert_eq!(app.explore.index.as_ref().unwrap().root_node().files, 3);
 
     // back to the list; the plan is there; help draws
     key(&mut app, KeyCode::Esc); // hides the log
@@ -169,7 +177,7 @@ fn explore_mark_plan_apply_undo() {
     ch(&mut app, '1');
     ch(&mut app, 'r');
     pump(&mut app, "the rescan", |a| a.explore.scanning.is_none());
-    assert!(!app.explore.stale);
+    assert!(!app.explore.stale && !app.explore.patched && app.explore.cached.is_none());
     ch(&mut app, 'q');
     assert!(app.quit);
 }
@@ -213,6 +221,40 @@ fn cleanup_makes_a_plan() {
     let v = app.plans.review.as_ref().unwrap();
     assert_eq!(v.plan.entries[0].path, proj.join("target"));
     assert_eq!(v.plan.entries[0].status, tidy_plan::Status::Pending);
+}
+
+#[test]
+fn starts_from_the_cached_index() {
+    let (_lock, t) = sandbox();
+    let root = t.path().join("work");
+    write(&root.join("a/one.bin"), 10_000);
+    tidy_scan::cache::store(&tidy_scan::scan(&root, &Default::default()).unwrap()).unwrap();
+    // changed since that scan
+    write(&root.join("b/two.bin"), 20_000);
+
+    let mut app = App::new(root.clone());
+    pump(&mut app, "the cached index", |a| a.explore.index.is_some());
+    let root = fs::canonicalize(&root).unwrap();
+    assert_eq!(app.explore.cached.as_deref(), Some(root.as_path()));
+    assert!(app.explore.scanning.is_some(), "a fresh scan runs meanwhile");
+    let names: Vec<&str> = app.explore.rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["a"], "the cached folders, before the refresh");
+    assert!(screen(&mut app).contains("refreshing the cached index"));
+
+    pump(&mut app, "the refresh", |a| a.explore.scanning.is_none());
+    assert!(app.explore.cached.is_none());
+    let names: Vec<&str> = app.explore.rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["b", "a"]);
+    assert!(screen(&mut app).contains("scanned"));
+
+    // a folder inside a cached one starts from the parent's index
+    let mut app = App::new(root.join("b"));
+    pump(&mut app, "the cut-out index", |a| a.explore.index.is_some());
+    assert_eq!(app.explore.cached.as_deref(), Some(root.as_path()));
+    assert_eq!(app.explore.rows[0].name, "two.bin");
+    // as after Esc stopped the refresh: the header says where it came from
+    app.explore.scanning = None;
+    assert!(screen(&mut app).contains(&format!("cached index of {}, scanned", display_path(&root))));
 }
 
 #[test]

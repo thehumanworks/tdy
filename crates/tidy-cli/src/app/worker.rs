@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use tidy_plan::{Action, ApplyOptions, store};
+use tidy_plan::{Action, ApplyOptions, store, sync};
 use tidy_rules::Policy;
 use tidy_rules::guards::Guards;
 use tidy_scan::{Index, ScanOptions, ScanProgress};
@@ -24,6 +24,18 @@ pub struct Tag {
 pub struct Scanned {
     pub index: Index,
     pub tags: HashMap<u32, Tag>,
+    /// For an index from the cache: the folder whose scan it came from.
+    pub cached_from: Option<PathBuf>,
+}
+
+impl Scanned {
+    fn new(index: Index, policy: &Policy, cached_from: Option<PathBuf>) -> Self {
+        let tags = tidy_rules::detect::detect(&index, &policy.detect_config())
+            .into_iter()
+            .map(|f| (f.node, Tag { id: f.detector, what: f.reason, hint: f.hint, min_age: f.min_age }))
+            .collect();
+        Scanned { index, tags, cached_from }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,40 +66,84 @@ pub struct ProposeResult {
 }
 
 pub enum Msg {
-    Scanned { seq: u64, result: Result<Scanned, String> },
-    Explained { path: PathBuf, result: Result<Explanation, String> },
-    Rules { path: PathBuf, result: Result<Option<RulesExplanation>, String> },
-    Proposed { action: Action, result: Result<ProposeResult, String> },
+    Scanned {
+        seq: u64,
+        result: Result<Scanned, String>,
+    },
+    /// An index from the cache (`None`: there is none for this folder).
+    Cached {
+        seq: u64,
+        scanned: Option<Scanned>,
+    },
+    Explained {
+        path: PathBuf,
+        result: Result<Explanation, String>,
+    },
+    Rules {
+        path: PathBuf,
+        result: Result<Option<RulesExplanation>, String>,
+    },
+    Proposed {
+        action: Action,
+        result: Result<ProposeResult, String>,
+    },
     CleanupScanning(Arc<ScanProgress>),
     CleanupPhase(&'static str),
     CleanupJudging(usize, usize),
     CleanupDone(Result<CleanupResult, String>),
-    ExecLine { plan: String, kind: EventKind, text: String },
-    ExecDone { plan: String, op: ExecOp, result: Result<tidy_plan::Report, String> },
+    ExecLine {
+        plan: String,
+        kind: EventKind,
+        text: String,
+    },
+    /// `synced`: cached indexes patched to match (none for dry runs).
+    ExecDone {
+        plan: String,
+        op: ExecOp,
+        result: Result<tidy_plan::Report, String>,
+        synced: tidy_scan::cache::Synced,
+    },
 }
 
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
+/// What the Explore screen can show from the cache: any scan of the folder
+/// (or of one above it) on this filesystem.
+fn cached_index(root: &std::path::Path, policy: &Policy) -> Option<Scanned> {
+    let want = ScanOptions { top_k: 0, ..Default::default() };
+    tidy_scan::cache::load(root, &want).map(|c| Scanned::new(c.index, policy, Some(c.from)))
+}
+
 /// Scan `root` for the Explore screen and tag what the detectors recognise.
-pub fn scan(tx: Sender<Msg>, seq: u64, root: PathBuf, policy: Arc<Policy>, progress: Arc<ScanProgress>) {
+/// With `cached`, first send the cached index, if there is one, so the
+/// screen fills at once while the scan runs.
+pub fn scan(tx: Sender<Msg>, seq: u64, root: PathBuf, policy: Arc<Policy>, progress: Arc<ScanProgress>, cached: bool) {
     std::thread::spawn(move || {
+        if cached && let Some(s) = cached_index(&root, &policy) {
+            let _ = tx.send(Msg::Cached { seq, scanned: Some(s) });
+        }
         let opts = ScanOptions {
-            top_k: 0,
+            top_k: crate::scan_cmds::CACHED_TOP,
             // Free on APFS (same syscall); FIEMAP per file on Linux is not.
             private: cfg!(target_os = "macos"),
             progress: Some(progress),
             ..Default::default()
         };
         let result = tidy_scan::scan(&root, &opts).map_err(|e| e.to_string()).map(|index| {
-            let tags = tidy_rules::detect::detect(&index, &policy.detect_config())
-                .into_iter()
-                .map(|f| (f.node, Tag { id: f.detector, what: f.reason, hint: f.hint, min_age: f.min_age }))
-                .collect();
-            Scanned { index, tags }
+            // best effort: the next start is instant (stderr belongs to the screen)
+            let _ = tidy_scan::cache::store(&index);
+            Scanned::new(index, &policy, None)
         });
         let _ = tx.send(Msg::Scanned { seq, result });
+    });
+}
+
+/// Read `root`'s index back from the cache (after an apply patched it).
+pub fn reload(tx: Sender<Msg>, seq: u64, root: PathBuf, policy: Arc<Policy>) {
+    std::thread::spawn(move || {
+        let _ = tx.send(Msg::Cached { seq, scanned: cached_index(&root, &policy) });
     });
 }
 
@@ -148,10 +204,13 @@ pub fn cleanup(tx: Sender<Msg>, root: PathBuf, detectors: bool, rules: bool) {
             let _ = tx2.send(Msg::CleanupScanning(progress.clone()));
             let req = tidy_rules::planner::PlanRequest {
                 roots: vec![root.clone()],
-                scan: ScanOptions { top_k: 0, progress: Some(progress), ..Default::default() },
+                scan: ScanOptions { top_k: crate::scan_cmds::CACHED_TOP, progress: Some(progress), ..Default::default() },
                 detectors,
             };
             let mut planned = tidy_rules::planner::plan_detectors(&req, &policy, &guards, header)?;
+            for idx in &planned.indexes {
+                let _ = tidy_scan::cache::store(idx);
+            }
             let mut out = CleanupResult::default();
             if rules && !policy.rules.is_empty() {
                 let _ = tx2.send(Msg::CleanupPhase("judging"));
@@ -193,9 +252,15 @@ pub fn exec(tx: Sender<Msg>, plan_id: String, op: ExecOp) {
             let (kind, text) = crate::plan_cmds::event_text(&ev);
             let _ = txl.send(Msg::ExecLine { plan: id.clone(), kind, text });
         };
+        let mut synced = tidy_scan::cache::Synced::default();
         let result = (|| -> anyhow::Result<tidy_plan::Report> {
             let (mut plan, _) = store::load(Some(&plan_id))?;
-            match op {
+            let tracker = match op {
+                ExecOp::DryRun => None,
+                ExecOp::Apply => Some(sync::watch(&plan, sync::Op::Apply, None)),
+                ExecOp::Undo => Some(sync::watch(&plan, sync::Op::Undo, None)),
+            };
+            let r = match op {
                 ExecOp::Undo => tidy_plan::undo(&mut plan, None, &mut on),
                 ExecOp::DryRun | ExecOp::Apply => {
                     let policy = crate::plan_cmds::plan_policy(&plan)?;
@@ -203,9 +268,14 @@ pub fn exec(tx: Sender<Msg>, plan_id: String, op: ExecOp) {
                     let opts = ApplyOptions { dry_run: op == ExecOp::DryRun, only: None, verify: true };
                     tidy_plan::apply(&mut plan, &opts, &guard, &mut on)
                 }
+            };
+            // the cached indexes catch up, so Explore needn't rescan
+            if let Some(t) = tracker {
+                synced = t.finish(&plan);
             }
+            r
         })()
         .map_err(err);
-        let _ = tx.send(Msg::ExecDone { plan: plan_id, op, result });
+        let _ = tx.send(Msg::ExecDone { plan: plan_id, op, result, synced });
     });
 }

@@ -189,9 +189,16 @@ pub fn cmd_plan(c: PlanCmd) -> Result<()> {
         c.paths.iter().map(|p| std::fs::canonicalize(expand_tilde(p)).with_context(|| p.to_string())).collect::<Result<_>>()?;
     let guards = Guards::new(policy.guard_config());
     let header = planner::new_header(roots.clone(), policy.mode, ppath, hash, None);
-    let req = PlanRequest { roots, scan: ScanOptions { threads: c.threads, top_k: 0, ..Default::default() }, detectors: !c.no_detectors };
+    let req = PlanRequest {
+        roots,
+        scan: ScanOptions { threads: c.threads, top_k: crate::scan_cmds::CACHED_TOP, ..Default::default() },
+        detectors: !c.no_detectors,
+    };
     let started = std::time::Instant::now();
     let mut planned = planner::plan_detectors(&req, &policy, &guards, header)?;
+    for idx in &planned.indexes {
+        crate::scan_cmds::keep(idx);
+    }
     if !c.no_rules && !policy.rules.is_empty() {
         // A missing key or unreachable judge must not block deterministic cleanup.
         if let Err(e) = crate::judge_cmds::add_policy_entries(&mut planned, &policy, &guards) {
@@ -427,7 +434,7 @@ pub fn cmd_apply(c: ApplyCmd) -> Result<()> {
     let opts = ApplyOptions { dry_run: c.dry_run, only, verify: !c.no_verify };
     let guard = apply_guard(&policy);
     let json = c.json;
-    let report = tidy_plan::apply(&mut plan, &opts, &guard, &mut |ev| print_event(&ev, json))?;
+    let report = tidy_plan::sync::apply(&mut plan, &opts, &guard, &mut |ev| print_event(&ev, json))?;
     if json {
         println!("{}", serde_json::json!({"plan": plan.header.id, "report": report}));
         return Ok(());
@@ -510,7 +517,7 @@ pub fn cmd_undo(c: UndoCmd) -> Result<()> {
     } else {
         Some(plan.entries.iter().filter(|e| c.entries.iter().any(|x| e.id.starts_with(x.as_str()))).map(|e| e.id.clone()).collect())
     };
-    let r = tidy_plan::undo(&mut plan, only.as_ref(), &mut |ev| print_event(&ev, false))?;
+    let r = tidy_plan::sync::undo(&mut plan, only.as_ref(), &mut |ev| print_event(&ev, false))?;
     println!("{} {} restored · {} not undoable · {} failed", ui::bold(&plan.header.id), r.undone, r.skipped, r.failed);
     Ok(())
 }

@@ -156,7 +156,7 @@ impl App {
             toast: warning.map(|w| (w, Instant::now())),
             quit: false,
         };
-        app.explore.start_scan(&app.ctx);
+        app.explore.open(&app.ctx);
         app
     }
 
@@ -307,6 +307,7 @@ impl App {
     pub fn on_msg(&mut self, m: Msg) {
         let a = match m {
             Msg::Scanned { seq, result } => self.explore.on_scanned(seq, result),
+            Msg::Cached { seq, scanned } => self.explore.on_cached(seq, scanned, &self.ctx),
             Msg::Explained { path, result } => {
                 self.explore.on_explained(path, result);
                 Act::None
@@ -337,9 +338,10 @@ impl App {
                 self.plans.on_line(&plan, kind, text);
                 Act::None
             }
-            Msg::ExecDone { plan, op, result } => {
-                if op != worker::ExecOp::DryRun && result.is_ok() {
-                    self.explore.stale = true;
+            Msg::ExecDone { plan, op, result, synced } => {
+                // (a failed run may still have changed some entries)
+                if op != worker::ExecOp::DryRun {
+                    self.explore.after_change(&self.ctx, synced);
                 }
                 self.plans.on_done(plan, op, result)
             }

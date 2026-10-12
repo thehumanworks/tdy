@@ -167,10 +167,16 @@ Measured (Linux, 2 vCPU):
 - **Scanner:** 1.55 s for 1.1M entries warm (2× du, 2.5× dust/gdu). Peak RSS is 151 MB at 11M entries.
 - **gpt-6-luna via the Decisions API:** p50 537 ms / p95 628 ms through a proxy. About 700 input tokens per item for metadata-only requests, about 740 with a thumbnail.
 
+Built after the first release (October 2026):
+- an automatic index cache: instant starts, `--cached` answers, subfolders cut out of a cached parent
+- patching cached indexes after apply and undo, instead of rescanning
+- huge folders stat-ed on several threads (Linux)
+
+Tried and dropped: io_uring statx batching (1.7–2.3× slower than plain statx on warm metadata).
+
 Not built yet:
 - per-rule judges
-- FSEvents event-id incremental rescans (snapshots and `tidy diff` exist)
-- io_uring statx batching
+- FSEvents event-id incremental rescans (the index cache exists; this would tell it what changed)
 - PGO
 - video keyframes
 - Windows

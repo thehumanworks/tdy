@@ -105,8 +105,15 @@ pub struct Explore {
     explaining: HashSet<PathBuf>,
     rules: HashMap<PathBuf, Result<Option<RulesExplanation>, String>>,
     ruling: HashSet<PathBuf>,
-    /// Something was applied since the scan.
+    /// Something was applied since the scan, and the index couldn't be
+    /// brought up to date.
     pub stale: bool,
+    /// The index on screen came from the cache: the folder whose scan it was.
+    pub cached: Option<PathBuf>,
+    /// The index on screen was patched after an apply or undo.
+    pub patched: bool,
+    /// Waiting for the cached index after an apply or undo.
+    reloading: bool,
     /// Files of the folder on screen, read once per visit (filtering and
     /// sorting reuse them).
     files: Option<(u32, Vec<Row>)>,
@@ -136,19 +143,55 @@ impl Explore {
             rules: HashMap::new(),
             ruling: HashSet::new(),
             stale: false,
+            cached: None,
+            patched: false,
+            reloading: false,
             files: None,
         }
     }
 
+    /// First look: the cached index at once (if there is one), then a scan.
+    pub fn open(&mut self, ctx: &Ctx) {
+        self.scan_with(ctx, true);
+    }
+
     pub fn start_scan(&mut self, ctx: &Ctx) {
+        self.scan_with(ctx, false);
+    }
+
+    fn scan_with(&mut self, ctx: &Ctx, cached: bool) {
         if let Some((p, _)) = &self.scanning {
             p.cancel.store(true, Ordering::Relaxed);
         }
         self.seq += 1;
         self.error = None;
+        self.reloading = false;
         let progress = Arc::new(ScanProgress::default());
         self.scanning = Some((progress.clone(), Instant::now()));
-        worker::scan(ctx.tx.clone(), self.seq, self.root.clone(), ctx.policy.clone(), progress);
+        worker::scan(ctx.tx.clone(), self.seq, self.root.clone(), ctx.policy.clone(), progress, cached);
+    }
+
+    /// Put a new index on screen, staying in the same folder and row
+    /// (ids change between indexes).
+    fn install(&mut self, s: Scanned) {
+        let here = self.index.as_ref().map(|i| i.path(self.cwd));
+        let row = self.selected().map(|r| r.path.clone());
+        self.remember.clear();
+        self.cwd = here.and_then(|p| s.index.lookup(&p)).unwrap_or(0);
+        self.tags = s.tags;
+        self.cached = s.cached_from;
+        self.index = Some(s.index);
+        self.files = None;
+        self.stale = false;
+        self.patched = false;
+        self.explained.clear();
+        self.rules.clear();
+        // marks that no longer exist are dropped
+        self.marks.retain(|p, _| p.symlink_metadata().is_ok());
+        self.rebuild();
+        if let Some(r) = row {
+            self.select_path(&r);
+        }
     }
 
     pub fn on_scanned(&mut self, seq: u64, result: Result<Scanned, String>) -> Act {
@@ -158,29 +201,55 @@ impl Explore {
         self.scanning = None;
         match result {
             Ok(s) => {
-                // Return to the folder and row on screen now (ids change between scans).
-                let here = self.index.as_ref().map(|i| i.path(self.cwd));
-                let row = self.selected().map(|r| r.path.clone());
-                self.remember.clear();
-                self.cwd = here.and_then(|p| s.index.lookup(&p)).unwrap_or(0);
-                self.tags = s.tags;
-                self.index = Some(s.index);
-                self.files = None;
-                self.stale = false;
-                self.explained.clear();
-                self.rules.clear();
-                // marks that no longer exist are dropped
-                self.marks.retain(|p, _| p.symlink_metadata().is_ok());
-                self.rebuild();
-                if let Some(r) = row {
-                    self.select_path(&r);
-                }
+                self.install(s);
                 Act::None
             }
+            // a cached index stays on screen
+            Err(e) if self.index.is_some() => Act::Toast(format!("{e} — showing the cached index")),
             Err(e) => {
                 self.error = Some(e.clone());
                 Act::Toast(e)
             }
+        }
+    }
+
+    pub fn on_cached(&mut self, seq: u64, scanned: Option<Scanned>, ctx: &Ctx) -> Act {
+        if seq != self.seq {
+            return Act::None;
+        }
+        let reloading = std::mem::take(&mut self.reloading);
+        match scanned {
+            // never replace what's on screen with something older
+            Some(s) if self.index.as_ref().is_none_or(|i| i.stats.started_ms <= s.index.stats.started_ms) => {
+                self.install(s);
+                self.patched = reloading;
+            }
+            // nothing usable after a change: look again
+            _ if reloading => self.start_scan(ctx),
+            _ => {}
+        }
+        Act::None
+    }
+
+    /// An apply or undo finished: show the index the cache was patched to,
+    /// or rescan when that isn't possible.
+    pub fn after_change(&mut self, ctx: &Ctx, synced: tidy_scan::cache::Synced) {
+        let Some(idx) = &self.index else {
+            self.stale = true;
+            return;
+        };
+        let (started, finished) = (idx.stats.started_ms, idx.stats.started_ms.saturating_add(idx.stats.elapsed_ms as i64));
+        if self.scanning.is_some() || (finished >= synced.started_ms && started <= synced.ended_ms) {
+            // a scan that ran during the change may have seen part of it
+            self.start_scan(ctx);
+        } else if started > synced.ended_ms {
+            // scanned after it: shows it already
+        } else if synced.patched + synced.dropped > 0 {
+            self.seq += 1;
+            self.reloading = true;
+            worker::reload(ctx.tx.clone(), self.seq, self.root.clone(), ctx.policy.clone());
+        } else {
+            self.stale = true;
         }
     }
 
@@ -581,9 +650,15 @@ impl Explore {
             ));
         }
         l1.push(Span::styled(format!("   sort {} · bytes {by_label}", self.sort.label()), dim()));
+        let age = self.index.as_ref().map(|i| fmt::age(tidy_scan::cache::age_secs(i))).unwrap_or_default();
         let l2 = if let Some((p, t)) = &self.scanning {
+            let what = if self.cached.is_some() {
+                format!(" {} refreshing the cached index ({age} old) ", spinner())
+            } else {
+                format!(" {} scanning ", spinner())
+            };
             Line::from(vec![
-                Span::styled(format!(" {} scanning ", spinner()), accent()),
+                Span::styled(what, accent()),
                 Span::raw(format!(
                     "{} files · {} folders · {} · {:.1}s",
                     crate::ui::thousands(p.files.load(Ordering::Relaxed)),
@@ -611,6 +686,13 @@ impl Explore {
             }
             if self.stale {
                 s.push(Span::styled(" changed since the scan — r to rescan ", fg(Color::Yellow)));
+            }
+            if s.is_empty()
+                && let Some(from) = &self.cached
+            {
+                let of = if *from == self.root { String::new() } else { format!(" of {}", display_path(from)) };
+                let since = if self.patched { " and kept up to date since" } else { "" };
+                s.push(Span::styled(format!(" cached index{of}, scanned {age} ago{since} · r rescans"), dim()));
             }
             if let Some(idx) = &self.index
                 && s.is_empty()
@@ -776,31 +858,30 @@ impl Explore {
     }
 }
 
-/// Files (and links, sockets…) directly inside `dir`.
+/// Files (and links, sockets…) directly inside `dir`. Large folders are
+/// stat-ed on several threads.
 fn list_files(dir: &Path, rows: &mut Vec<Row>) {
-    let c = tidy_scan::path::path_to_cbytes(dir);
-    let Ok(cstr) = std::ffi::CStr::from_bytes_with_nul(&c) else { return };
-    let mut reader = tidy_scan::platform::Reader::new(ReadOptions { private: cfg!(target_os = "macos") });
-    let _ = reader.read(cstr, &mut |e| {
+    let Ok(entries) = tidy_scan::list_dir(dir, ReadOptions { private: cfg!(target_os = "macos") }) else { return };
+    rows.reserve(entries.len());
+    for e in entries {
         let kind = match e.kind {
-            Kind::Dir => return,
+            Kind::Dir => continue,
             Kind::File => RowKind::File,
             Kind::Symlink => RowKind::Link,
             Kind::Other => RowKind::Other,
         };
-        let name = String::from_utf8_lossy(e.name).into_owned();
         let alloc = if e.flags & tidy_scan::entry::flags::DATALESS != 0 { 0 } else { e.alloc };
         rows.push(Row {
             kind,
-            path: dir.join(tidy_scan::path::bytes_to_path(e.name)),
-            name,
+            path: dir.join(tidy_scan::path::bytes_to_path(&e.name)),
+            name: String::from_utf8_lossy(&e.name).into_owned(),
             bytes: Bytes { logical: e.logical, alloc, private: e.private.unwrap_or(alloc).min(alloc) },
             items: 1,
             mtime: e.mtime,
             tag: None,
             flags: 0,
         });
-    });
+    }
 }
 
 /// `████▌     ` for a fraction of `width` cells.

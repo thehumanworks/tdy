@@ -148,11 +148,22 @@ pub struct ScanStats {
     pub others: u64,
     pub errors: u64,
     pub hardlinks_deduped: u64,
+    /// Files with more than one link (each counted once, where the scan met
+    /// it first).
+    pub linked_files: u64,
     pub mounts_skipped: u64,
     pub elapsed_ms: u64,
     pub threads: usize,
     pub backend: &'static str,
     pub private_measured: bool,
+    /// Whether the scan descended into other filesystems.
+    pub cross_mounts: bool,
+    /// `top_files` holds the true `top_k` largest files (every file, if
+    /// there are fewer). 0: the list is not to be relied on.
+    pub top_k: usize,
+    /// When the scan started (ms since the epoch). Kept when an index is
+    /// loaded from the cache or patched, so its age stays honest.
+    pub started_ms: i64,
     pub error_samples: Vec<String>,
 }
 
@@ -433,6 +444,97 @@ impl Index {
             .collect();
         v.sort_unstable_by_key(|&i| std::cmp::Reverse(self.nodes[i as usize].size(k)));
         v
+    }
+
+    /// The subtree at `id` as an index of its own, as if `path(id)` had been
+    /// scanned at the same moment. One difference: a file hard-linked both
+    /// inside and outside the subtree stays counted wherever the original
+    /// scan met it first.
+    pub fn extract(&self, id: u32) -> Index {
+        let mut ids = self.subtree(id);
+        // ascending ids keep every child after its parent
+        ids.sort_unstable();
+        let mut map: rustc_hash::FxHashMap<u32, u32> = rustc_hash::FxHashMap::default();
+        map.reserve(ids.len());
+        let mut nodes = Vec::with_capacity(ids.len());
+        let mut names = Vec::new();
+        for (new, &old) in ids.iter().enumerate() {
+            map.insert(old, new as u32);
+            let mut n = self.nodes[old as usize];
+            if old == id {
+                // like a scan's root: no name, no parent
+                n.parent = NO_PARENT;
+                n.name_off = 0;
+                n.name_len = 0;
+            } else {
+                n.parent = map[&n.parent];
+                n.name_off = names.len() as u32;
+                names.extend_from_slice(self.name(old));
+            }
+            nodes.push(n);
+        }
+        let top_files: Vec<FileHit> = self.top_files.iter().filter_map(|f| Some(FileHit { dir: *map.get(&f.dir)?, ..f.clone() })).collect();
+        // A full list stays a true top list only as far as it goes; a
+        // complete one (every file) stays complete.
+        let complete = self.top_files.len() < self.stats.top_k;
+        let top_k = if self.stats.top_k == 0 || complete { self.stats.top_k } else { top_files.len() };
+        let count = |flag: u16| nodes.iter().filter(|n: &&DirNode| n.flags & flag != 0).count() as u64;
+        let stats = ScanStats {
+            files: nodes[0].files,
+            dirs: nodes[0].dirs as u64 + 1,
+            errors: count(node_flags::UNREADABLE),
+            mounts_skipped: count(node_flags::MOUNT_SKIPPED),
+            top_k,
+            // not kept per folder: unknown for a part of the tree
+            symlinks: 0,
+            others: 0,
+            hardlinks_deduped: 0,
+            linked_files: 0,
+            error_samples: vec![],
+            ..self.stats.clone()
+        };
+        Index::new(self.path(id), nodes, names, top_files, self.top_by, stats)
+    }
+
+    /// What directory `id` holds directly: its files plus its subfolders'
+    /// own entries (the subfolders' contents excluded).
+    pub fn own_part(&self, id: u32) -> (u64, u64, u64, u64) {
+        let n = &self.nodes[id as usize];
+        let (mut files, mut logical, mut alloc, mut private) = (n.files, n.logical, n.alloc, n.private);
+        for &c in self.children(id) {
+            let c = &self.nodes[c as usize];
+            files = files.saturating_sub(c.files);
+            logical = logical.saturating_sub(c.logical);
+            alloc = alloc.saturating_sub(c.alloc);
+            private = private.saturating_sub(c.private);
+        }
+        (files, logical, alloc, private)
+    }
+
+    /// Drop the cached child lists after the arena changes.
+    pub(crate) fn reset_children(&mut self) {
+        self.children = std::sync::OnceLock::new();
+    }
+
+    /// Check the arena's invariants (for indexes read from disk): every
+    /// parent comes before its children and every name is in bounds.
+    pub fn validate(&self) -> Result<(), String> {
+        let n = self.nodes.len();
+        if n == 0 {
+            return Err("no root".into());
+        }
+        for (i, node) in self.nodes.iter().enumerate() {
+            if i > 0 && node.parent as usize >= i {
+                return Err(format!("node {i}: parent {} does not come first", node.parent));
+            }
+            if node.name_off as usize + node.name_len as usize > self.names.len() {
+                return Err(format!("node {i}: name out of bounds"));
+            }
+        }
+        if let Some(f) = self.top_files.iter().find(|f| f.dir as usize >= n) {
+            return Err(format!("top file in unknown folder {}", f.dir));
+        }
+        Ok(())
     }
 
     /// Approximate heap bytes held by the index.

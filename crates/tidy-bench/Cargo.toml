@@ -14,3 +14,8 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true
+tidy-scan.workspace = true
+
+[[bin]]
+name = "tidy-cachebench"
+path = "src/cache_bench.rs"

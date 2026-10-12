@@ -70,7 +70,7 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 | `tdy-cli` | The `tdy` binary: commands, plain-English requests, the interactive UI (`tdy ui`, ratatui), `$EDITOR` review, watch mode, MCP server | all of the above | 6,883 / — |
 | `tdy-bench` | `tdy-fixture`: deterministic trees for benchmarks; `tdy-cachebench`: cached starts and patches against rescans | scan | 256 / — |
 
-That is about 19,500 lines of Rust (counted with `wc -l`) plus about 1,400 lines of integration tests. There are 75 tests in total; unit tests live next to the code.
+That is about 19,500 lines of Rust (counted with `wc -l`) plus about 1,400 lines of integration tests. There are 76 tests in total; unit tests live next to the code.
 
 ## 4. Data flow
 
@@ -377,7 +377,7 @@ Scanning, detectors, guards, plans, space actions and deterministic rules (inclu
 
 ## 10. Testing and tooling
 
-- `cargo test` runs 75 tests:
+- `cargo test` runs 76 tests:
   - scanner (totals against a reference walk and `du`, lookups and top files, snapshot round-trip and diff, a 12,000-entry folder split across 1, 2 and 8 threads)
   - index cache and patching, each checked folder by folder against a fresh scan: cache round trip and choice of index, cut-outs, patches after removals, renames, new nested folders and restores, folders rewritten or replaced under the same name, an index that had fallen behind, landing in folders the change created, hard links (refused), and syncing cached indexes, including a scan that ran during the change
   - filesystem ops (trash and quarantine round-trips, symlink safety, mount listing, drift detection, dupes and archives, bplist and tags)

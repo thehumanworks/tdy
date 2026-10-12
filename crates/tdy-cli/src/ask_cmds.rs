@@ -46,6 +46,11 @@ pub fn ask_plan(req: &Request, progress: &(dyn Fn(usize, usize) + Sync)) -> Resu
     p.rules.retain(|r| r.action == "keep");
     p.rules.push(req.rule());
     p.mode = Mode::Manual;
+    if req.criterion.is_none() && crate::judge_cmds::build_judge(&p, false).is_err() {
+        // The request itself needs no judge (a missing API key, say, mustn't
+        // stop it); keep rules that need one stay fail-safe and protect.
+        p.judge = Default::default();
+    }
     if req.criterion.is_some() && crate::judge_cmds::build_judge(&p, false)?.is_none() {
         bail!(
             "deciding which items are “{}” needs a judge, and none is configured (see `tdy init`); \

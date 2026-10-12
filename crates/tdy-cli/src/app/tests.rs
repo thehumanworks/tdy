@@ -480,3 +480,24 @@ fn non_utf8_names_keep_their_bytes() {
     }
     assert_eq!(app.explore.rows.len(), 2);
 }
+
+#[test]
+fn asks_the_filters_describe_need_no_judge_key() {
+    let (_lock, t) = sandbox();
+    fs::create_dir_all(t.path().join("cfg")).unwrap();
+    // a judge is configured, but its key isn't set
+    fs::write(
+        t.path().join("cfg/policy.toml"),
+        "[judge]\ndefault = \"luna\"\n[judge.backends.luna]\nkind = \"openai-decisions\"\nmodel = \"gpt-6-luna\"\napi_key_env = \"TDY_TEST_UNSET_KEY\"\n",
+    )
+    .unwrap();
+    let dl = t.path().join("Downloads");
+    write(&dl.join("Figma.dmg"), 30_000);
+    let req = tdy_rules::ask::parse("trash dmg files older than 30 days", &dl).unwrap();
+    let a = crate::ask_cmds::ask_plan(&req, &|_, _| {}).unwrap();
+    assert_eq!(a.plan.entries.len(), 1);
+    // one that needs the judge says why it can't run
+    let req = tdy_rules::ask::parse("trash screenshots", &dl).unwrap();
+    let e = crate::ask_cmds::ask_plan(&req, &|_, _| {}).err().unwrap();
+    assert!(format!("{e:#}").contains("TDY_TEST_UNSET_KEY"), "{e:#}");
+}

@@ -154,15 +154,13 @@ pub fn policy_entries(
     // L1 artifacts win: drop L2 entries at or inside an L1 path.
     let l1: Vec<PathBuf> = planned.plan.entries.iter().map(|e| e.path.clone()).collect();
     es.retain(|e| !l1.iter().any(|p| e.path.starts_with(p)));
-    for o in &run.outcomes {
-        if let OutcomeKind::Blocked { rule, why } = &o.kind {
-            planned.blocked.push(tdy_rules::planner::Blocked {
-                path: o.item.path.clone(),
-                by: rule.clone(),
-                block: tdy_rules::Block { guard: "policy", reason: why.clone() },
-                bytes: o.item.alloc,
-            });
-        }
+    for e in es.iter().filter(|e| e.refusal.is_some()) {
+        planned.blocked.push(tdy_rules::planner::Blocked {
+            path: e.path.clone(),
+            by: e.source.rule.clone(),
+            block: tdy_rules::Block { guard: "policy", reason: e.refusal.clone().unwrap() },
+            bytes: e.bytes.alloc,
+        });
     }
     let errors: Vec<&str> =
         run.outcomes.iter().filter_map(|o| if let OutcomeKind::Error(e) = &o.kind { Some(e.as_str()) } else { None }).collect();

@@ -1,5 +1,6 @@
-//! L0 guards: absolute, code-level blocks. Nothing a detector, a model or a
-//! policy says can override them (only explicit, narrow config knobs).
+//! L0 guards: code-level refusals that detectors, models and automatic policy
+//! approval cannot bypass. A human may explicitly override a retained source
+//! refusal for one plan entry; destination checks remain mandatory.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;

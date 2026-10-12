@@ -41,7 +41,7 @@ An honest look at v0.1 (October 2026). Numbers come from the benchmark and live 
 
 ### Safe by construction
 - **One path to change anything:** plan → review → apply. Dry runs and autonomous mode are the same mechanism, not special cases.
-- **Layered authority.** Code guards (L0) beat detectors (L1), which beat the model (L2), which beats nothing without your approval. The model never writes a path.
+- **Layered authority.** Code guards (L0) beat detectors (L1) and the model (L2) by default. Refused candidates need an explicit human override; ordinary approval is insufficient. The model never writes a path.
 - **Crash-safe and reversible.**
   - Intent is journalled before every change and fsync'd.
   - Cross-volume moves never delete a source unless the copy verified.

@@ -20,7 +20,7 @@ pub struct Policy {
     pub min_age: Option<String>,
     #[serde(default)]
     pub allow_cloud: bool,
-    /// Paths that are never touched.
+    /// Paths refused by default; each action requires an explicit human override.
     #[serde(default)]
     pub protect: Vec<String>,
     #[serde(default)]
@@ -390,7 +390,7 @@ pub fn template_root(t: &str) -> PathBuf {
 pub const EXAMPLE: &str = r#"# Tidy policy. Rules are checked top to bottom; for moves/deletes the first
 # rule whose answer clears its threshold wins. Tags accumulate.
 mode = "manual"          # "autonomous" writes plan entries pre-approved
-min_age = "7d"           # never touch anything modified more recently
+min_age = "7d"           # refuse recent items unless a human explicitly overrides
 protect = ["~/Documents/Taxes"]
 
 # Built-in rule packs, all off until listed here. `tdy presets` describes

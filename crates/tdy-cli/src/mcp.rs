@@ -19,7 +19,7 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "
 const INSTRUCTIONS: &str = "Tidy analyses disk usage and proposes cleanup/organisation as plans. \
 Workflow: tdy_scan / tdy_top to understand space; tdy_plan (or tdy_propose for specific actions) to create a plan; \
 show it to the user and ask them to approve with `tdy review <plan>` in their terminal; then tdy_apply. \
-You cannot approve entries: tdy_apply only runs entries a human approved (or the policy approved in autonomous mode). \
+Refused items stay in the plan with their reasons; the user can explicitly override them with `tdy review <plan> --override-refusals` (optionally `--entry <id>`). You cannot approve or override entries: tdy_apply only runs entries a human approved (or the policy approved in autonomous mode). \
 Every applied entry can be inspected with tdy_show_plan and most can be reverted with tdy_undo.";
 
 fn tools() -> Value {
@@ -37,9 +37,9 @@ fn tools() -> Value {
         {"name": "tdy_explain", "description": "Why a path would or would not be touched: detector match, guard verdicts per action, policy rule probabilities.",
          "inputSchema": {"type": "object", "properties": {"path": path}, "required": ["path"]},
          "annotations": {"readOnlyHint": true}},
-        {"name": "tdy_plan", "description": "Create a plan from built-in detectors and the user's policy rules. Entries start pending (unless the policy is autonomous).",
+        {"name": "tdy_plan", "description": "Create a plan from built-in detectors and the user's policy rules. Refused candidates are retained with reasons for human override; other entries start pending (unless the policy is autonomous).",
          "inputSchema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}}, "rules": {"type": "boolean", "default": true}, "detectors": {"type": "boolean", "default": true}}, "required": ["paths"]}},
-        {"name": "tdy_propose", "description": "Propose specific actions as a new plan (pending until a human approves). Actions: trash, quarantine, delete, move, copy, rename, tag, archive.",
+        {"name": "tdy_propose", "description": "Propose specific actions as a new plan (pending until a human approves; guard refusals retained for explicit human override). Actions: trash, quarantine, delete, move, copy, rename, tag, archive.",
          "inputSchema": {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
              "action": {"type": "string"}, "path": {"type": "string"}, "dest": {"type": "string", "description": "Full destination path for move/copy/rename"},
              "tags": {"type": "array", "items": {"type": "string"}}, "reason": {"type": "string"}}, "required": ["action", "path", "reason"]}}}, "required": ["actions"]}},
@@ -152,7 +152,7 @@ fn compact(e: &Entry) -> Value {
     json!({
         "id": e.id, "status": e.status, "approved_by": e.approved_by, "action": e.action, "path": e.path, "dest": e.dest, "tags": e.tags,
         "bytes": e.bytes.private.max(e.bytes.logical.min(e.bytes.alloc)), "rule": e.source.rule, "p": e.source.p,
-        "reason": e.reason, "undo": e.undo, "error": e.outcome.as_ref().and_then(|o| o.error.clone())
+        "reason": e.reason, "refusal": e.refusal, "override_refusal": e.override_refusal, "undo": e.undo, "error": e.outcome.as_ref().and_then(|o| o.error.clone())
     })
 }
 
@@ -242,7 +242,7 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
             let id = v.get("plan").and_then(Value::as_str).unwrap_or("latest").to_string();
             let (plan, _) = store::load(Some(&id))?;
             Ok(json!({"plan": id, "counts": plan.counts(), "entries": plan.entries.iter().take(200).map(compact).collect::<Vec<_>>(),
-                      "next": format!("Ask the user to review and approve: `tdy review {id}` (agents cannot approve)")}))
+                      "next": review_next(&plan)}))
         }
         "tdy_propose" => propose(a),
         "tdy_plans" => {
@@ -342,6 +342,17 @@ pub fn call(name: &str, a: &Value) -> Result<Value> {
     }
 }
 
+fn review_next(plan: &Plan) -> String {
+    let id = &plan.header.id;
+    let mut next = format!("Ask the user to review and approve: `tdy review {id}` (agents cannot approve or override)");
+    if plan.entries.iter().any(|e| e.refusal.is_some()) {
+        next.push_str(&format!(
+            ". To explicitly override refused items: `tdy review {id} --override-refusals` (add `--entry ID` to select items)"
+        ));
+    }
+    next
+}
+
 fn run_self(args: &[String]) -> Result<Value> {
     let out = std::process::Command::new(std::env::current_exe()?).args(args).env("NO_COLOR", "1").output()?;
     if !out.status.success() {
@@ -385,7 +396,7 @@ fn propose(a: &Value) -> Result<Value> {
         return Ok(json!({"plan": null, "rejected": rejected}));
     };
     Ok(json!({"plan": plan.header.id, "entries": plan.entries.iter().map(compact).collect::<Vec<_>>(), "rejected": rejected,
-              "next": format!("Ask the user to review and approve: `tdy review {}`", plan.header.id), "reclaimable": fmt::bytes(plan.counts().reclaimable)}))
+              "next": review_next(&plan), "reclaimable": fmt::bytes(plan.counts().reclaimable)}))
 }
 
 #[cfg(test)]
@@ -447,7 +458,33 @@ mod tests {
         // guards apply to proposals too
         // (/etc/passwd exists everywhere, including the Nix build sandbox)
         let v = call("tdy_propose", &json!({"actions": [{"action": "delete", "path": "/etc/passwd", "reason": "x"}]})).unwrap();
-        assert!(v["plan"].is_null());
+        assert!(v["plan"].is_string());
+        assert_eq!(v["entries"][0]["status"], "rejected");
+        assert!(v["entries"][0]["refusal"].as_str().unwrap().contains("system"));
         assert!(v["rejected"][0]["why"].as_str().unwrap().contains("system"));
+        assert!(v["next"].as_str().unwrap().contains("--override-refusals"));
+
+        // A recent file can be overridden by a human and applied through MCP.
+        let recent = t.path().join("recent.bin");
+        std::fs::write(&recent, b"recent data").unwrap();
+        let v = call("tdy_propose", &json!({"actions": [{"action": "quarantine", "path": recent, "reason": "cleanup"}]})).unwrap();
+        let id = v["plan"].as_str().unwrap();
+        assert_eq!(v["entries"][0]["status"], "rejected");
+        assert!(v["entries"][0]["refusal"].as_str().unwrap().contains("recent"));
+        let (mut p, _) = store::load(Some(id)).unwrap();
+        assert_eq!(review::set_status(&mut p, &review::Filter::default(), Status::Approved, "human"), 0);
+        assert_eq!(review::override_refusals(&mut p, &review::Filter::default()), 1);
+        store::save(&p).unwrap();
+        let shown = call("tdy_show_plan", &json!({"plan": id})).unwrap();
+        assert_eq!(shown["entries"][0]["override_refusal"], true);
+        let r = call("tdy_apply", &json!({"plan": id, "dry_run": true})).unwrap();
+        assert_eq!(r["report"]["would"], 1, "{r}");
+        assert!(recent.exists());
+        let r = call("tdy_apply", &json!({"plan": id})).unwrap();
+        assert_eq!(r["report"]["applied"], 1, "{r}");
+        assert!(!recent.exists());
+        let r = call("tdy_undo", &json!({"plan": id})).unwrap();
+        assert_eq!(r["report"]["undone"], 1, "{r}");
+        assert!(recent.exists());
     }
 }

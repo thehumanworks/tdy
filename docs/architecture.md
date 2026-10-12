@@ -24,7 +24,7 @@ Tidy is a command-line tool that **analyses, cleans up, compresses and organises
 
 1. **Plans are the only way anything happens.** Every proposed action is an entry in a plan file and runs only once approved. Dry runs, manual review and autonomous mode all use this one mechanism.
 2. **The model chooses; code writes.** Models return probabilities, choices and scores, never paths or names. Paths come from templates or from a fixed list of existing folders.
-3. **Code guards are absolute.** L0 guards block system paths, credentials, bundles, cloud placeholders, git work in progress, open files, recent changes and mount points. Neither a rule, a model nor an agent can override them.
+3. **Code guards refuse by default.** L0 guards block system paths, credentials, bundles, cloud placeholders, git work in progress, open files, recent changes and mount points. Refused candidates remain rejected in the saved plan. A human can explicitly override individual refusals during review; models and agents cannot authorize overrides. Fingerprints, destination and rule checks, and filesystem constraints still apply.
 4. **Reversible by default.** `trash` and `quarantine` are preferred over `delete`. Intent is journalled before each act, and undo works per plan or per entry.
 5. **Pay once.** Judge answers are cached by request digest, so rescanning an unchanged item under an unchanged policy costs nothing.
 
@@ -108,7 +108,7 @@ That is about 19,500 lines of Rust (counted with `wc -l`) plus about 1,400 lines
 review   TUI | $EDITOR (rebase-style) | --approve/--reject + filters → status, approved_by = "human"
 apply    for each approved entry:
            re-fingerprint (dev, ino, size, mtime; dir summary; BLAKE3 for dedupe) → skip if changed
-           re-run guards + rule checks (e.g. extracted-sibling)
+           re-run guards (source guards bypassed for explicit human overrides) + rule checks (e.g. extracted-sibling)
            journal "begin" (undo state) → act → journal "copied" (cross-volume) → "done" | "fail"
 undo     journal "undo-begin" → reverse (restore from trash/quarantine, move back, restore tags;
          archives: move the quarantined original back, delete the .tar.zst) → "undo-done" | "undo-fail"
@@ -185,7 +185,7 @@ A JSON-RPC 2.0 MCP server over stdio. It accepts protocol versions 2025-11-25, 2
 - **Plan file:** JSONL with one header line (id, roots, mode, policy path and hash, judge id) and one line per entry. Saved atomically (temp file plus rename) under `<data>/plans/<id>.jsonl`.
 - **Entry fields:**
   - what to do: `action` (delete, trash, quarantine, move, copy, rename, tag, dedupe, compress, archive), `path`, optional `dest` with `create_dest`, `on_conflict`, `tags`
-  - status: `status` and `approved_by`
+  - status: `status`, `approved_by`, original `refusal`, and explicit `override_refusal`
   - checks and context: `bytes`, `fingerprint`, `source` (layer and rule), `reason`, `alternatives`, raw judge `evidence`
   - undo: `undo` capability, then the `outcome` once applied
 - **Journal:** append-only and fsync'd. It records `begin` (with undo state such as previous tags or the archive path), `copied`, `done` (the full outcome), `fail`, `undo-begin`, `undo-done`, `undo-fail` and `recovered`.

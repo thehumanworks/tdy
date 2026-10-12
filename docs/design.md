@@ -8,7 +8,7 @@ Personal tool. macOS + Linux first-class; Windows later. Rust, release builds tu
 
 1. **The model chooses, templates write.** Decision models return probabilities/choices/scores — never paths or names. Destinations come from templates or a `choice` among existing folders.
 2. **Plans are the only way anything happens.** Every proposed action is an entry in a plan file. Nothing runs until an entry is `approve`d. Dry-runs and autonomy are the same mechanism.
-3. **Code guards outrank models.** L0 guards are absolute; models can only suggest or veto within what guards allow.
+3. **Code guards outrank models.** L0 refusals are retained for review; models cannot override guards, but a human can explicitly override a refused entry.
 4. **Reversible by default.** `trash`/`quarantine` over `delete`; journal before act; undo per plan or entry.
 5. **Measure what you get back.** Track logical, allocated and private (unshared) bytes.
 
@@ -94,6 +94,7 @@ tdy plan ~ [--policy tdy.toml]        → plan id
 tdy review <id>                        # TUI, one by one
 tdy review <id> --edit                 # $EDITOR, rebase-style
 tdy review <id> --approve-all | --reject-all | --approve --rule R --min-p P
+tdy review <id> --override-refusals [--entry ID]
 tdy apply <id> [--dry-run]
 tdy undo <id> [--entry E]
 ```

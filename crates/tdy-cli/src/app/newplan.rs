@@ -151,7 +151,7 @@ impl NewPlan {
     pub fn on_done(&mut self, r: Result<PlanResult, String>) -> Act {
         self.running = None;
         let act = match &r {
-            Ok(c) if c.actions > 0 => Act::OpenPlan(c.plan.clone()),
+            Ok(c) if c.actions > 0 || c.retained > 0 => Act::OpenPlan(c.plan.clone()),
             Ok(_) => Act::Toast("nothing to do here: the plan is empty".into()),
             Err(e) => {
                 Act::Dialog(Dialog { title: format!("{} failed", self.kind.title()), lines: vec![Line::raw(e.clone())], confirm: None })
@@ -299,7 +299,7 @@ impl NewPlan {
             }
             (KeyCode::Enter, _) => self.run(ctx),
             (KeyCode::Char('o'), _) => match &self.result {
-                Some(Ok(c)) if c.actions > 0 => Act::OpenPlan(c.plan.clone()),
+                Some(Ok(c)) if c.actions > 0 || c.retained > 0 => Act::OpenPlan(c.plan.clone()),
                 _ => Act::None,
             },
             (KeyCode::Esc, _) => {
@@ -482,7 +482,7 @@ impl NewPlan {
                 for w in &c.warnings {
                     out.push(Line::from(Span::styled(format!(" ⚠ {w}"), fg(Color::Yellow))));
                 }
-                if c.actions > 0 {
+                if c.actions > 0 || c.retained > 0 {
                     out.push(Line::raw(""));
                     out.push(Line::from(vec![Span::styled(" o ", bold().patch(accent())), Span::raw("review it on the Plans screen")]));
                 }

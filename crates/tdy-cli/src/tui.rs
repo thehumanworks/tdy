@@ -3,10 +3,10 @@
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
 use tdy_plan::review::Filter;
 use tdy_plan::{Plan, Status, store};
 use tdy_scan::{fmt, path::display_path};
@@ -19,6 +19,7 @@ pub struct ReviewView {
     view: Vec<usize>,
     state: TableState,
     detail: bool,
+    override_pending: Vec<usize>,
     /// Unsaved status changes (standalone mode).
     pub dirty: bool,
     /// Save after every change instead of on exit (inside `tdy ui`).
@@ -48,6 +49,7 @@ impl ReviewView {
             view: vec![],
             state: TableState::default(),
             detail: false,
+            override_pending: vec![],
             dirty: false,
             autosave: false,
             msg: String::new(),
@@ -59,12 +61,17 @@ impl ReviewView {
     /// Swap in a fresh copy of the plan (after apply/undo), keeping the cursor.
     pub fn replace_plan(&mut self, plan: Plan) {
         self.plan = plan;
+        self.override_pending.clear();
         self.dirty = false;
         self.refilter();
     }
 
     pub fn typing(&self) -> bool {
-        self.typing
+        self.typing || !self.override_pending.is_empty()
+    }
+
+    pub fn confirming_override(&self) -> bool {
+        !self.override_pending.is_empty()
     }
 
     fn refilter(&mut self) {
@@ -105,8 +112,12 @@ impl ReviewView {
         if let Some(e) = self.current()
             && e.status.reviewable()
         {
+            let before = e.status;
             tdy_plan::review::set_one(e, st, "human");
-            hit = true;
+            hit = before != e.status;
+            if st == Status::Approved && e.status != st {
+                self.msg = "refused — o to review an explicit override".into();
+            }
         }
         if hit {
             self.changed();
@@ -119,14 +130,32 @@ impl ReviewView {
         for &i in &self.view {
             let e = &mut self.plan.entries[i];
             if e.status.reviewable() && e.status != st {
+                let before = e.status;
                 tdy_plan::review::set_one(e, st, "human");
-                n += 1;
+                n += usize::from(before != e.status);
             }
         }
         if n > 0 {
             self.changed();
         }
         self.msg = format!("{n} entries → {}", st.as_str());
+    }
+
+    fn request_override(&mut self, all: bool) {
+        self.override_pending = self
+            .view
+            .iter()
+            .copied()
+            .filter(|&i| {
+                (all || self.state.selected().and_then(|s| self.view.get(s)).copied() == Some(i))
+                    && self.plan.entries[i].status.reviewable()
+                    && self.plan.entries[i].refusal.is_some()
+                    && !self.plan.entries[i].override_refusal
+            })
+            .collect();
+        if self.override_pending.is_empty() {
+            self.msg = "no refused entries to override".into();
+        }
     }
 
     fn down(&mut self) {
@@ -141,6 +170,24 @@ impl ReviewView {
     }
 
     pub fn handle(&mut self, k: KeyEvent) -> Outcome {
+        if !self.override_pending.is_empty() {
+            match k.code {
+                KeyCode::Char('y' | 'Y') => {
+                    let pending = std::mem::take(&mut self.override_pending);
+                    let n = pending.into_iter().filter(|&i| tdy_plan::review::override_one(&mut self.plan.entries[i])).count();
+                    if n > 0 {
+                        self.changed();
+                    }
+                    self.msg = format!("{n} refused entries explicitly approved");
+                }
+                KeyCode::Char('n' | 'N' | 'q') | KeyCode::Esc => {
+                    self.override_pending.clear();
+                    self.msg = "override cancelled".into();
+                }
+                _ => {}
+            }
+            return Outcome::Handled;
+        }
         if self.typing {
             match k.code {
                 KeyCode::Enter | KeyCode::Esc => self.typing = false,
@@ -179,6 +226,8 @@ impl ReviewView {
                 self.set(next);
             }
             (KeyCode::Char('A'), _) => self.set_all_visible(Status::Approved),
+            (KeyCode::Char('o'), _) => self.request_override(false),
+            (KeyCode::Char('O'), _) => self.request_override(true),
             (KeyCode::Char('R'), _) => self.set_all_visible(Status::Rejected),
             (KeyCode::Char('/'), _) => self.typing = true,
             (KeyCode::Enter, _) => self.detail = !self.detail,
@@ -211,7 +260,14 @@ impl ReviewView {
         let filter_line = if self.typing || !self.query.is_empty() {
             Line::from(vec![Span::raw(" filter: ").dim(), Span::raw(self.query.clone()), Span::raw(if self.typing { "▏" } else { "" })])
         } else {
-            Line::from(Span::raw(format!(" {} shown", self.view.len())).dim())
+            let refusal = self.state.selected().and_then(|s| self.view.get(s)).and_then(|&i| self.plan.entries[i].refusal.as_deref());
+            Line::from(
+                Span::raw(match refusal {
+                    Some(reason) => format!(" {} shown · refusal: {reason}", self.view.len()),
+                    None => format!(" {} shown", self.view.len()),
+                })
+                .dim(),
+            )
         };
         f.render_widget(Paragraph::new(vec![title, filter_line]), head);
 
@@ -228,7 +284,7 @@ impl ReviewView {
                 let size = if e.bytes.private > 0 { fmt::bytes(e.bytes.private) } else { String::new() };
                 let undo = if e.undo == tdy_plan::Undo::Restore { "↺" } else { "" };
                 Row::new(vec![
-                    status_cell(e.status),
+                    if e.refusal.is_some() && !e.override_refusal { Cell::from("! refused").red() } else { status_cell(e.status) },
                     Cell::from(e.id.clone()).dim(),
                     Cell::from(e.action.as_str()),
                     Cell::from(size),
@@ -281,6 +337,15 @@ impl ReviewView {
                     )),
                 ]),
             ];
+            if let Some(reason) = &e.refusal {
+                lines.insert(
+                    0,
+                    Line::from(vec![
+                        Span::raw(if e.override_refusal { "override " } else { "refused  " }).yellow(),
+                        Span::raw(reason.clone()),
+                    ]),
+                );
+            }
             if let Some(ev) = &e.evidence {
                 lines.push(Line::from(vec![Span::raw("judge   ").dim(), Span::raw(crate::judge_cmds::evidence_summary(ev))]));
             }
@@ -301,9 +366,36 @@ impl ReviewView {
         let help = if !self.msg.is_empty() {
             Line::from(Span::raw(format!(" {}", self.msg)).yellow())
         } else {
-            Line::from(Span::raw(format!(" a approve · r reject · p pending · A all · / filter · ⏎ details{hint}")).dim())
+            Line::from(Span::raw(format!(" a approve · r reject · A all · o/O override one/shown · / filter · ⏎ details{hint}")).dim())
         };
         f.render_widget(Paragraph::new(help), foot);
+        if !self.override_pending.is_empty() {
+            let mut lines =
+                vec![Line::raw(format!("Approve {} refused item(s) and bypass their guard checks?", self.override_pending.len()))];
+            for &i in self.override_pending.iter().take(6) {
+                let e = &self.plan.entries[i];
+                lines.push(Line::raw(display_path(&e.path)));
+                lines.push(Line::from(Span::raw(e.refusal.clone().unwrap_or_default()).red()));
+            }
+            if self.override_pending.len() > 6 {
+                lines.push(Line::raw(format!("… {} more refused items", self.override_pending.len() - 6)));
+            }
+            lines.push(Line::raw("Nothing moves until apply. Fingerprint checks still apply."));
+            lines.push(Line::raw("y confirm override · n / Esc cancel"));
+            let width = 90.min(area.width);
+            let inner_width = usize::from(width.saturating_sub(2).max(1));
+            let height =
+                lines.iter().map(|line| line.width().div_ceil(inner_width).max(1) + usize::from(line.width() > inner_width)).sum::<usize>()
+                    as u16
+                    + 2;
+            let [vertical] = Layout::vertical([Constraint::Length(height.min(area.height))]).flex(Flex::Center).areas(area);
+            let [popup] = Layout::horizontal([Constraint::Length(90.min(area.width))]).flex(Flex::Center).areas(vertical);
+            f.render_widget(Clear, popup);
+            f.render_widget(
+                Paragraph::new(lines).wrap(Wrap { trim: true }).block(Block::default().borders(Borders::ALL).title(" Override refusals? ")),
+                popup,
+            );
+        }
     }
 }
 

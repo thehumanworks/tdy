@@ -425,9 +425,15 @@ impl Explore {
                     }
                     if let Some(id) = &r.plan {
                         lines.push(Line::raw(""));
-                        lines.push(Line::raw(format!("The plan is on the Plans screen (2), as {id}.")));
+                        lines.push(Line::raw(format!("Plan {id} retains these refusals for review (Plans, 2).")));
+                        lines.push(Line::raw("Override the retained refusals and approve them? Guard checks will be bypassed."));
+                        lines.push(Line::raw("Nothing moves until apply. Fingerprint checks still apply."));
                     }
-                    return Act::Dialog(Dialog { title: "Some items were refused".into(), lines, confirm: None });
+                    return Act::Dialog(Dialog {
+                        title: "Some items were refused".into(),
+                        lines,
+                        confirm: r.plan.map(Confirm::OverrideRefusals),
+                    });
                 }
                 match r.plan {
                     Some(id) => Act::OpenPlan(id),

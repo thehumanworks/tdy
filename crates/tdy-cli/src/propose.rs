@@ -1,6 +1,6 @@
 //! Turn explicit requests ("trash these") into a plan: shared by MCP agents
 //! (entries start pending) and the TUI's marks (approved by the human who
-//! marked them). Guards apply either way.
+//! marked them). Guard refusals are retained for explicit human review.
 
 use anyhow::Result;
 use std::collections::HashSet;
@@ -30,7 +30,7 @@ pub enum By {
 }
 
 pub struct Proposed {
-    /// The saved plan, unless every proposal was rejected.
+    /// The saved plan, including guard refusals. None when no valid action could be built.
     pub plan: Option<Plan>,
     pub rejected: Vec<(PathBuf, String)>,
 }
@@ -59,17 +59,25 @@ pub fn propose(items: Vec<Proposal>, by: By, note: &str) -> Result<Proposed> {
             }
         };
         let facts = Facts { mtime_max: Some(fp.mtime), flags: 0, regenerable: false, min_age: None };
-        if let Err(b) = guards.check(&it.path, it.action, &facts, None) {
-            rejected.push((it.path, b.to_string()));
-            continue;
+        let refusal = guards.check(&it.path, it.action, &facts, None).err().map(|b| b.to_string());
+        if let Some(why) = &refusal {
+            rejected.push((it.path.clone(), why.clone()));
         }
         let id = entry_id(&it.path, it.action, &taken);
         taken.insert(id.clone());
         let bytes = it.bytes.unwrap_or(Bytes { logical: fp.size, alloc: fp.size, private: fp.size });
         plan.entries.push(Entry {
             id,
-            status: if by == By::Human { Status::Approved } else { Status::Pending },
-            approved_by: (by == By::Human).then(|| "human".to_string()),
+            status: if refusal.is_some() {
+                Status::Rejected
+            } else if by == By::Human {
+                Status::Approved
+            } else {
+                Status::Pending
+            },
+            approved_by: (by == By::Human && refusal.is_none()).then(|| "human".to_string()),
+            refusal,
+            override_refusal: false,
             action: it.action,
             path: it.path,
             dest: it.dest,

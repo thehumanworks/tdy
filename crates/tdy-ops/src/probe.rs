@@ -124,8 +124,14 @@ pub fn git_root(p: &Path) -> Option<PathBuf> {
 }
 
 pub fn git_state(root: &Path) -> Option<GitState> {
-    let o =
-        Command::new("git").arg("-C").arg(root).args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"]).output().ok()?;
+    // This is a read-only guard probe. An index refresh would change the
+    // directory fingerprint between planning and applying an override.
+    let o = Command::new("git")
+        .args(["--no-optional-locks", "-C"])
+        .arg(root)
+        .args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"])
+        .output()
+        .ok()?;
     if !o.status.success() {
         return None;
     }

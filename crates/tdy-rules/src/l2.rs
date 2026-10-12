@@ -301,6 +301,14 @@ pub struct Outcome {
     pub kind: OutcomeKind,
     pub rule_p: Vec<(String, f64)>,
     pub response: Option<Response>,
+    /// Concrete candidates retained for review despite a planning refusal.
+    pub refused: Vec<RefusedProposal>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefusedProposal {
+    pub proposal: Proposal,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -338,6 +346,139 @@ pub struct Proposal {
     pub check: Option<String>,
 }
 
+fn effective_action(r: &CompiledRule, ans: &BTreeMap<String, Answer>, uncertain: bool) -> (Action, bool, Option<String>) {
+    let mut action = r.action.expect("action rule");
+    let mut uncertain = uncertain || r.rule.always_review;
+    let mut note = None;
+    if r.removal() && !r.rule.when.is_empty() {
+        let regenerable = ans.get("safety.regenerable").and_then(|a| a.p());
+        let loss = match ans.get("safety.loss") {
+            Some(Answer::Score { score, .. }) => Some(*score),
+            _ => None,
+        };
+        if action == Action::Delete && !(regenerable.unwrap_or(0.0) >= 0.8 && loss.unwrap_or(3.0) <= 1.0) {
+            action = Action::Trash;
+            note = Some(format!(
+                "downgraded delete → trash (regenerable {:.2}, loss {:.1}/3)",
+                regenerable.unwrap_or(0.0),
+                loss.unwrap_or(3.0)
+            ));
+        }
+        match loss {
+            Some(l) if l >= 2.5 => {
+                uncertain = true;
+                let prefix = note.map(|n| format!("{n}; ")).unwrap_or_default();
+                note = Some(format!("{prefix}judge rates losing it as costly (loss {l:.1}/3)"));
+            }
+            None => {
+                uncertain = true;
+                let prefix = note.map(|n| format!("{n}; ")).unwrap_or_default();
+                note = Some(format!("{prefix}judge gave no loss estimate"));
+            }
+            _ => {}
+        }
+    }
+    (action, uncertain, note)
+}
+
+/// Retain only actionable candidates: destination selection must have succeeded,
+/// and a winning exclusive proposal suppresses its unused alternatives.
+fn refused_candidates(
+    it: &Item,
+    rules: &[&CompiledRule],
+    resp: Option<&Response>,
+    guards: &Guards,
+    kind: &OutcomeKind,
+) -> Vec<RefusedProposal> {
+    let empty = BTreeMap::new();
+    let ans = resp.map(|r| &r.answers).unwrap_or(&empty);
+    let accepted = match kind {
+        OutcomeKind::Propose { entries } => entries.as_slice(),
+        _ => &[],
+    };
+    let newest = it.dir.as_ref().map(|d| d.newest.max(it.mtime)).unwrap_or(it.mtime);
+    let facts = Facts { mtime_max: Some(newest), flags: it.flags, regenerable: false, min_age: None };
+    let keep = |candidate: &CompiledRule| {
+        rules.iter().find_map(|r| {
+            if !r.is_keep() || (r.protects_removal_only() && !candidate.lossy_removal()) {
+                return None;
+            }
+            let p = rule_probability(r, ans);
+            (p.is_none() || p.is_some_and(|p| p >= r.threshold)).then(|| match p {
+                Some(p) => format!("keep rule {} matched ({p:.2})", r.rule.id),
+                None => format!("keep rule {} was unanswered", r.rule.id),
+            })
+        })
+    };
+    let mut out = Vec::new();
+    for r in rules {
+        if r.action.is_none() {
+            continue;
+        }
+        let (action, uncertain, note) = effective_action(r, ans, false);
+        if accepted.iter().any(|p| p.rule.split('+').any(|id| id == r.rule.id))
+            || (action.exclusive() && accepted.iter().any(|p| p.action.exclusive()))
+        {
+            continue;
+        }
+        let dest = match action {
+            Action::Move | Action::Copy => match destination(r, it, ans) {
+                Ok(d) => Some(d),
+                Err(_) => continue,
+            },
+            Action::Rename => match (&r.rule.name, it.path.parent()) {
+                (Some(tpl), Some(parent)) => Some(parent.join(expand_template(tpl, it, None))),
+                _ => continue,
+            },
+            _ => None,
+        };
+        if dest.as_ref().is_some_and(|d| d == &it.path) {
+            continue;
+        }
+        let tags = if action == Action::Tag {
+            let existing = tdy_ops::meta::get_tags(&it.path);
+            let tags: Vec<_> = r.rule.tags.iter().filter(|t| !existing.contains(t)).cloned().collect();
+            if tags.is_empty() {
+                continue;
+            }
+            tags
+        } else {
+            vec![]
+        };
+        let p = rule_probability(r, ans);
+        let reason = guards.check(&it.path, action, &facts, None).err().map(|b| b.to_string()).or_else(|| keep(r)).or_else(|| {
+            if resp.is_none() || r.rule.when.is_empty() {
+                return None;
+            }
+            let cutoff = if r.exclusive() { (r.threshold - 0.25).max(0.5) } else { r.threshold };
+            match p {
+                Some(p) if p < cutoff => Some(format!("judge did not match rule {} ({p:.2}; threshold {:.2})", r.rule.id, r.threshold)),
+                None => Some(format!("judge did not answer rule {}", r.rule.id)),
+                _ => None,
+            }
+        });
+        let Some(reason) = reason else { continue };
+        out.push(RefusedProposal {
+            proposal: Proposal {
+                rule: r.rule.id.clone(),
+                action,
+                p: p.unwrap_or(0.0),
+                dest,
+                tags,
+                uncertain,
+                note,
+                alternatives: vec![],
+                create_dest: r.rule.to.as_ref().is_some_and(|t| t.create_if_missing),
+                on_conflict: r.rule.on_conflict.unwrap_or_default(),
+                mode: r.rule.mode,
+                check: r.rule.check.clone(),
+            },
+            reason,
+        });
+    }
+    out
+}
+
 /// Decide one item from its answers.
 pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guards: &Guards, now: i64) -> (OutcomeKind, Vec<(String, f64)>) {
     let empty = BTreeMap::new();
@@ -362,11 +503,6 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
             return (OutcomeKind::Kept { rule: r.rule.id.clone(), p: *p }, ps);
         }
     }
-    let regenerable = ans.get("safety.regenerable").and_then(|a| a.p());
-    let loss = match ans.get("safety.loss") {
-        Some(Answer::Score { score, .. }) => Some(*score),
-        _ => None,
-    };
     let newest = it.dir.as_ref().map(|d| d.newest.max(it.mtime)).unwrap_or(it.mtime);
     let facts = Facts { mtime_max: Some(newest), flags: it.flags, regenerable: false, min_age: None };
     let mut proposals = Vec::new();
@@ -393,30 +529,7 @@ pub fn decide(it: &Item, rules: &[&CompiledRule], resp: Option<&Response>, guard
     let mut blocked = None;
     if let Some((wi, p, uncertain)) = winner {
         let r = rules[wi];
-        let mut action = r.action.unwrap();
-        let mut uncertain = uncertain || r.rule.always_review;
-        let mut note = None;
-        if r.removal() && !r.rule.when.is_empty() {
-            if action == Action::Delete && !(regenerable.unwrap_or(0.0) >= 0.8 && loss.unwrap_or(3.0) <= 1.0) {
-                action = Action::Trash;
-                note = Some(format!(
-                    "downgraded delete → trash (regenerable {:.2}, loss {:.1}/3)",
-                    regenerable.unwrap_or(0.0),
-                    loss.unwrap_or(3.0)
-                ));
-            }
-            match loss {
-                Some(l) if l >= 2.5 => {
-                    uncertain = true;
-                    note = Some(format!("judge rates losing it as costly (loss {l:.1}/3)"));
-                }
-                None => {
-                    uncertain = true;
-                    note = Some("judge gave no loss estimate".into());
-                }
-                _ => {}
-            }
-        }
+        let (action, uncertain, note) = effective_action(r, ans, uncertain);
         let mut dest = None;
         let mut skip = None;
         if matches!(action, Action::Move | Action::Copy) {
@@ -781,7 +894,13 @@ pub fn run_on(
                     Some(r.clone())
                 }
                 Err(e) => {
-                    outcomes.push(Outcome { item: it, kind: OutcomeKind::Error(e.to_string()), rule_p: vec![], response: None });
+                    outcomes.push(Outcome {
+                        item: it,
+                        kind: OutcomeKind::Error(e.to_string()),
+                        rule_p: vec![],
+                        response: None,
+                        refused: vec![],
+                    });
                     continue;
                 }
             },
@@ -790,7 +909,8 @@ pub fn run_on(
         // Deterministic rules decide without answers; judged rules without a
         // response (guard-skipped) yield nothing.
         let (kind, ps) = decide(&it, &rs, resp.as_ref(), guards, now);
-        outcomes.push(Outcome { item: it, kind, rule_p: ps, response: resp });
+        let refused = refused_candidates(&it, &rs, resp.as_ref(), guards, &kind);
+        outcomes.push(Outcome { item: it, kind, rule_p: ps, response: resp, refused });
     }
     Ok(L2Run {
         outcomes,
@@ -806,12 +926,15 @@ pub fn run_on(
 pub fn entries(run: &L2Run, mode: Mode, judge_id: Option<&str>, taken: &mut HashSet<String>) -> Vec<Entry> {
     let mut out = Vec::new();
     for o in &run.outcomes {
-        let OutcomeKind::Propose { entries: props } = &o.kind else { continue };
-        for p in props {
+        let props = match &o.kind {
+            OutcomeKind::Propose { entries } => entries.as_slice(),
+            _ => &[],
+        };
+        for (p, refusal) in props.iter().map(|p| (p, None)).chain(o.refused.iter().map(|r| (&r.proposal, Some(r.reason.clone())))) {
             let Ok(fp) = tdy_ops::fingerprint(&o.item.path, None, false) else { continue };
             let id = entry_id(&o.item.path, p.action, taken);
             taken.insert(id.clone());
-            let auto = p.mode.unwrap_or(mode) == Mode::Autonomous && !p.uncertain;
+            let auto = refusal.is_none() && p.mode.unwrap_or(mode) == Mode::Autonomous && !p.uncertain;
             let evidence = json!({
                 "judge": judge_id,
                 "rules": o.rule_p.iter().map(|(r, p)| (r.clone(), json!((p * 1000.0).round() / 1000.0))).collect::<serde_json::Map<_, _>>(),
@@ -833,8 +956,16 @@ pub fn entries(run: &L2Run, mode: Mode, judge_id: Option<&str>, taken: &mut Hash
             let (logical, alloc) = (o.item.logical, o.item.alloc);
             out.push(Entry {
                 id,
-                status: if auto { Status::Approved } else { Status::Pending },
+                status: if refusal.is_some() {
+                    Status::Rejected
+                } else if auto {
+                    Status::Approved
+                } else {
+                    Status::Pending
+                },
                 approved_by: auto.then(|| "policy".to_string()),
+                refusal,
+                override_refusal: false,
                 action: p.action,
                 path: o.item.path.clone(),
                 dest: p.dest.clone(),

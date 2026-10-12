@@ -71,12 +71,202 @@ fn screen(app: &mut App) -> String {
 }
 
 #[test]
+fn refused_explore_items_require_confirmation_and_apply_from_the_same_plan() {
+    let (_lock, t) = sandbox();
+    for mixed in [false, true] {
+        let root = t.path().join(if mixed { "mixed" } else { "refused" });
+        let recent = root.join("recent.bin");
+        write(&recent, 500);
+        fs::File::options().write(true).open(&recent).unwrap().set_modified(SystemTime::now()).unwrap();
+        let old_path = root.join("old.bin");
+        if mixed {
+            write(&old_path, 500);
+        }
+        let mut app = App::new(root);
+        app.arm = Duration::ZERO;
+        pump(&mut app, "scan", |a| a.explore.index.is_some());
+        let mut paths = vec![recent.clone()];
+        if mixed {
+            paths.push(old_path.clone());
+        }
+        for p in &paths {
+            app.explore.marks.insert(p.clone(), Bytes::default());
+        }
+        app.confirmed(Confirm::Propose(Action::Quarantine, paths.iter().map(|p| (p.clone(), Bytes::default())).collect()));
+        pump(&mut app, "refusal dialog", |a| a.dialog.is_some());
+        let id = match &app.dialog.as_ref().unwrap().confirm {
+            Some(Confirm::OverrideRefusals(id)) => id.clone(),
+            _ => panic!("missing refusal override confirmation"),
+        };
+        assert!(screen(&mut app).contains("Override the retained refusals"));
+        let (before, _) = tdy_plan::store::load(Some(&id)).unwrap();
+        assert_eq!(before.entries.len(), paths.len());
+        assert_eq!(before.entries.iter().filter(|e| e.status == tdy_plan::Status::Approved).count(), usize::from(mixed));
+        assert_eq!(app.explore.marks.len(), 1, "only the refused mark remains");
+        ch(&mut app, 'n');
+        let (cancelled, _) = tdy_plan::store::load(Some(&id)).unwrap();
+        assert!(cancelled.entries.iter().all(|e| !e.override_refusal));
+        assert!(recent.exists(), "cancel never changes the file");
+
+        app.confirmed(Confirm::OverrideRefusals(id.clone()));
+        assert_eq!(app.tab, Tab::Plans);
+        assert!(app.explore.marks.is_empty(), "overridden marks are now accepted too");
+        let plan = &app.plans.review.as_ref().unwrap().plan;
+        assert_eq!(plan.header.id, id);
+        assert_eq!(plan.entries.len(), paths.len(), "the original plan is edited, never reproposed");
+        assert!(plan.entries.iter().all(|e| e.status == tdy_plan::Status::Approved));
+        assert!(plan.entries.iter().find(|e| e.path == recent).unwrap().override_refusal);
+        ch(&mut app, 'X');
+        pump(&mut app, "dry run", |a| a.dialog.is_some());
+        assert!(matches!(app.dialog.as_ref().unwrap().confirm, Some(Confirm::Apply(_))));
+        assert!(recent.exists());
+        ch(&mut app, 'y');
+        pump(&mut app, "apply", |a| a.plans.busy.is_none());
+        assert!(!recent.exists());
+        if mixed {
+            assert!(!old_path.exists());
+        }
+        let (applied, _) = tdy_plan::store::load(Some(&id)).unwrap();
+        assert_eq!(applied.entries.len(), paths.len());
+        assert!(applied.entries.iter().all(|e| e.status == tdy_plan::Status::Applied));
+    }
+}
+
+#[test]
+fn standalone_review_requires_override_and_respects_visible_filter() {
+    let (_lock, t) = sandbox();
+    let paths = [t.path().join("one.bin"), t.path().join("two.bin")];
+    for path in &paths {
+        write(path, 100);
+        fs::File::options().write(true).open(path).unwrap().set_modified(SystemTime::now()).unwrap();
+    }
+    let proposed = crate::propose::propose(
+        paths
+            .iter()
+            .map(|path| crate::propose::Proposal {
+                action: Action::Quarantine,
+                path: path.clone(),
+                dest: None,
+                tags: vec![],
+                reason: "review fixture".into(),
+                bytes: None,
+            })
+            .collect(),
+        crate::propose::By::Human,
+        "review fixture",
+    )
+    .unwrap();
+    let mut view = crate::tui::ReviewView::new(proposed.plan.unwrap(), tdy_plan::review::Filter::default());
+    let press = |view: &mut crate::tui::ReviewView, code| view.handle(KeyEvent::new(code, KeyModifiers::NONE));
+    press(&mut view, KeyCode::Char('A'));
+    assert!(view.plan.entries.iter().all(|e| e.status == tdy_plan::Status::Rejected));
+    assert!(!view.dirty);
+    press(&mut view, KeyCode::Char('o'));
+    assert!(view.typing(), "confirmation captures global keys in either host");
+    press(&mut view, KeyCode::Char('n'));
+    assert!(!view.dirty);
+    press(&mut view, KeyCode::Char('/'));
+    for c in "one.bin".chars() {
+        press(&mut view, KeyCode::Char(c));
+    }
+    press(&mut view, KeyCode::Enter);
+    press(&mut view, KeyCode::Char('O'));
+    let mut terminal = Terminal::new(TestBackend::new(120, 25)).unwrap();
+    terminal.draw(|f| view.draw(f, f.area(), "")).unwrap();
+    let rendered: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+    assert!(rendered.contains("Override refusals?") && rendered.contains("recent"), "{rendered}");
+    press(&mut view, KeyCode::Char('y'));
+    assert!(view.dirty);
+    assert!(view.plan.entries[0].override_refusal);
+    assert_eq!(view.plan.entries[0].status, tdy_plan::Status::Approved);
+    assert!(!view.plan.entries[1].override_refusal);
+    assert_eq!(view.plan.entries[1].status, tdy_plan::Status::Rejected);
+}
+
+#[test]
+fn new_plan_opens_all_refused_cleanup_and_ask_results() {
+    let (_lock, t) = sandbox();
+    let root = t.path().join("fixtures");
+    write(&root.join("project/Cargo.toml"), 10);
+    write(&root.join("project/target/debug/app"), 20_000);
+    write(&root.join("setup.dmg"), 20_000);
+    fs::create_dir_all(t.path().join("cfg")).unwrap();
+    fs::write(t.path().join("cfg/policy.toml"), format!("protect = [\"{}\"]\n[detectors]\nmin_size = \"1KB\"\n", root.display())).unwrap();
+    for kind in [newplan::Kind::Cleanup, newplan::Kind::Ask] {
+        let mut app = App::new(root.clone());
+        app.arm = Duration::ZERO;
+        pump(&mut app, "scan", |a| a.explore.index.is_some());
+        app.switch(Tab::NewPlan);
+        app.newplan.kind = kind;
+        if kind == newplan::Kind::Ask {
+            app.newplan.request = "trash dmg files older than 30 days".into();
+        }
+        key(&mut app, KeyCode::Enter);
+        pump(&mut app, "all-refused plan", |a| a.newplan.result.is_some());
+        let result = app.newplan.result.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(result.actions, 0);
+        assert!(result.retained > 0);
+        assert_eq!(app.tab, Tab::Plans);
+        let view = app.plans.review.as_ref().unwrap();
+        assert_eq!(view.plan.header.id, result.plan);
+        assert!(view.plan.entries.iter().all(|e| e.refusal.is_some() && e.status == tdy_plan::Status::Rejected));
+        ch(&mut app, 'O');
+        assert!(screen(&mut app).contains("Override refusals?"));
+        ch(&mut app, 'n');
+        assert!(app.plans.review.as_ref().unwrap().plan.entries.iter().all(|e| !e.override_refusal));
+    }
+}
+
+#[test]
+fn explore_git_refusal_displays_local_work_and_can_be_overridden() {
+    let (_lock, t) = sandbox();
+    let root = t.path().join("fixtures");
+    let repo = root.join("repository");
+    write(&repo.join("tracked.txt"), 100);
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["-c", "user.name=Tidy Test", "-c", "user.email=tidy@example.invalid", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "--quiet"]);
+    git(&["add", "tracked.txt"]);
+    git(&["commit", "--quiet", "-m", "fixture"]);
+    write(&repo.join("tracked.txt"), 200);
+    git(&["stash", "push", "--quiet"]);
+    write(&repo.join("dirty.txt"), 100);
+    fs::create_dir_all(t.path().join("cfg")).unwrap();
+    fs::write(t.path().join("cfg/policy.toml"), "min_age = \"0s\"\n").unwrap();
+    let mut app = App::new(root);
+    app.arm = Duration::ZERO;
+    pump(&mut app, "scan", |a| a.explore.index.is_some());
+    app.confirmed(Confirm::Propose(Action::Quarantine, vec![(repo.clone(), Bytes::default())]));
+    pump(&mut app, "git refusal", |a| a.dialog.is_some());
+    let rendered = screen(&mut app);
+    assert!(rendered.contains("stash") && rendered.contains("no upstream") && rendered.contains("uncommitted"), "{rendered}");
+    ch(&mut app, 'y');
+    let view = app.plans.review.as_ref().unwrap();
+    assert_eq!(view.plan.entries.len(), 1);
+    assert!(view.plan.entries[0].override_refusal);
+    ch(&mut app, 'X');
+    pump(&mut app, "git dry run", |a| a.dialog.is_some());
+    ch(&mut app, 'y');
+    pump(&mut app, "git apply", |a| a.plans.busy.is_none());
+    assert!(!repo.exists(), "{:?} {:?}", app.plans.review.as_ref().unwrap().plan.entries[0].outcome, app.plans.log);
+    assert_eq!(app.plans.review.as_ref().unwrap().plan.entries[0].status, tdy_plan::Status::Applied);
+}
+
+#[test]
 fn explore_mark_plan_apply_undo() {
     let (_lock, t) = sandbox();
     let root = t.path().join("work");
     write(&root.join("big/movie.bin"), 300_000);
     write(&root.join("small/note.txt"), 10_000);
     write(&root.join("loose.bin"), 50_000);
+    let root = fs::canonicalize(root).unwrap();
 
     let mut app = App::new(root.clone());
     app.arm = Duration::ZERO;
@@ -134,7 +324,7 @@ fn explore_mark_plan_apply_undo() {
     assert_eq!(plan.entries.len(), 1);
     assert_eq!(plan.entries[0].status, tdy_plan::Status::Approved);
     assert_eq!(plan.entries[0].approved_by.as_deref(), Some("human"));
-    assert_eq!(plan.entries[0].path, root.join("big"));
+    assert_eq!(plan.entries[0].path, fs::canonicalize(root.join("big")).unwrap());
     let id = plan.header.id.clone();
 
     // apply: a dry run first, then a confirmation
@@ -146,6 +336,9 @@ fn explore_mark_plan_apply_undo() {
     ch(&mut app, 'y');
     pump(&mut app, "the apply", |a| a.plans.busy.is_none() && a.toast.as_ref().is_some_and(|(t, _)| t.contains("applied")));
     assert!(!root.join("big").exists(), "moved to the trash");
+    #[cfg(target_os = "macos")]
+    assert!(t.path().join(".Trash/big").exists());
+    #[cfg(not(target_os = "macos"))]
     assert!(t.path().join("share/Trash/files/big").exists());
     assert_eq!(app.plans.review.as_ref().unwrap().plan.entries[0].status, tdy_plan::Status::Applied);
     // Explore shows the change without a rescan: the cached index was patched
@@ -219,7 +412,7 @@ fn cleanup_makes_a_plan() {
     assert_eq!(app.tab, Tab::Plans);
     let v = app.plans.review.as_ref().unwrap();
     assert_eq!(v.plan.header.id, r.plan);
-    assert_eq!(v.plan.entries[0].path, proj.join("target"));
+    assert_eq!(v.plan.entries[0].path, fs::canonicalize(proj.join("target")).unwrap());
     assert_eq!(v.plan.entries[0].status, tdy_plan::Status::Pending);
     // n on the list starts another
     key(&mut app, KeyCode::Esc);

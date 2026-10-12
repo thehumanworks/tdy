@@ -175,8 +175,8 @@ impl Plans {
         if let Some(v) = &mut self.review {
             let id = v.plan.header.id.clone();
             // While a job runs on this plan, the file belongs to it: no edits.
-            let edits = matches!(k.code, KeyCode::Char('a' | 'r' | 'x' | 'p' | 'u' | ' ' | 'A' | 'R'));
-            if edits && !v.typing() && self.busy.as_ref().is_some_and(|(p, _)| *p == id) {
+            let edits = matches!(k.code, KeyCode::Char('a' | 'r' | 'x' | 'p' | 'u' | ' ' | 'A' | 'R' | 'o' | 'O' | 'y' | 'Y'));
+            if edits && (!v.typing() || v.confirming_override()) && self.busy.as_ref().is_some_and(|(p, _)| *p == id) {
                 return (true, Act::Toast("wait for the job on this plan to finish".into()));
             }
             match v.handle(k) {

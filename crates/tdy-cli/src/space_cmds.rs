@@ -42,10 +42,16 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
     let groups = space::find_duplicates(&roots, min, c.threads)?;
     let total: u64 = groups.iter().map(|g| g.reclaimable()).sum();
     if c.json {
-        println!(
-            "{}",
-            serde_json::json!({"groups": groups.iter().take(c.lines).collect::<Vec<_>>(), "reclaimable": total, "count": groups.len()})
-        );
+        let mut result =
+            serde_json::json!({"groups": groups.iter().take(c.lines).collect::<Vec<_>>(), "reclaimable": total, "count": groups.len()});
+        if c.plan {
+            let SpacePlan { plan, blocked } = dupes_plan(roots, &groups)?;
+            result["path"] = serde_json::to_value(store::save(&plan)?)?;
+            result["plan"] = serde_json::to_value(&plan.header.id)?;
+            result["counts"] = serde_json::to_value(plan.counts())?;
+            result["blocked"] = serde_json::to_value(blocked)?;
+        }
+        println!("{result}");
         return Ok(());
     }
     println!(
@@ -78,9 +84,20 @@ pub fn cmd_dupes(c: DupesCmd) -> Result<()> {
         "{} {}  {}",
         ui::bold("plan"),
         ui::bold(&plan.header.id),
-        ui::dim(&format!("{} actions · {} reclaimable · {} blocked by guards", cnt.total, fmt::bytes(cnt.reclaimable), blocked))
+        ui::dim(&format!(
+            "{} actions · {} reclaimable · {} blocked by guards",
+            cnt.pending + cnt.approved,
+            fmt::bytes(cnt.reclaimable),
+            blocked
+        ))
     );
     println!("{}", ui::dim(&format!("next: tdy review {}", plan.header.id)));
+    if blocked > 0 {
+        println!(
+            "{}",
+            ui::yellow(&format!("Override refused items: tdy review {} --override-refusals (optionally --entry ID)", plan.header.id))
+        );
+    }
     Ok(())
 }
 
@@ -108,17 +125,17 @@ pub fn dupes_plan(roots: Vec<PathBuf>, groups: &[space::DupGroup]) -> Result<Spa
             }
             let action = if can_clone { Action::Dedupe } else { Action::Trash };
             let facts = Facts { mtime_max: Some(f.mtime), flags: 0, regenerable: false, min_age: None };
-            if guards.check(&f.path, action, &facts, Some(&[])).is_err() {
-                blocked += 1;
-                continue;
-            }
+            let refusal = guards.check(&f.path, action, &facts, Some(&[])).err().map(|b| b.to_string());
+            blocked += usize::from(refusal.is_some());
             let Ok(mut fp) = tdy_ops::fingerprint(&f.path, None, false) else { continue };
             fp.hash = Some(g.hash.clone());
             let id = entry_id(&f.path, action, &taken);
             taken.insert(id.clone());
             plan.entries.push(Entry {
+                status: if refusal.is_some() { Status::Rejected } else { Status::Pending },
+                refusal,
+                override_refusal: false,
                 id,
-                status: Status::Pending,
                 approved_by: None,
                 action,
                 path: f.path.clone(),
@@ -208,21 +225,23 @@ pub fn archive_plan(roots: Vec<PathBuf>, o: &ArchiveOpts, progress: Option<std::
             let action = if o.transparent && space::transparent_compression_supported(&p) { Action::Compress } else { Action::Archive };
             let git = tdy_rules::guards::git_roots_in_index(&idx, id);
             let facts = Facts { mtime_max: Some(node.mtime_max), flags: 0, regenerable: false, min_age: Some(older) };
-            if guards.check(&p, action, &facts, Some(&git)).is_err() {
-                blocked += 1;
-                continue;
-            }
-            let ratio = space::compressibility(&p, 64);
-            if ratio > o.max_ratio {
+            let refusal = guards.check(&p, action, &facts, Some(&git)).err().map(|b| b.to_string());
+            // Do not open refused content to estimate savings: reading a cloud
+            // placeholder could download it before the user authorizes an override.
+            let ratio = refusal.is_none().then(|| space::compressibility(&p, 64));
+            if ratio.is_some_and(|r| r > o.max_ratio) {
                 continue;
             }
             let Ok(fp) = tdy_ops::fingerprint(&p, None, false) else { continue };
+            blocked += usize::from(refusal.is_some());
             let eid = entry_id(&p, action, &taken);
             taken.insert(eid.clone());
-            let est = (node.alloc as f64 * (1.0 - ratio)) as u64;
+            let est = ratio.map(|r| (node.alloc as f64 * (1.0 - r)) as u64).unwrap_or(0);
             plan.entries.push(Entry {
+                status: if refusal.is_some() { Status::Rejected } else { Status::Pending },
+                refusal,
+                override_refusal: false,
                 id: eid,
-                status: Status::Pending,
                 approved_by: None,
                 action,
                 path: p.clone(),
@@ -238,10 +257,11 @@ pub fn archive_plan(roots: Vec<PathBuf>, o: &ArchiveOpts, progress: Option<std::
                     p: None,
                 },
                 reason: format!(
-                    "untouched for {} · sample compresses to {:.0}% · ≈{} saved{}",
+                    "untouched for {} · {}{}",
                     fmt::age(fmt::now_secs() - node.mtime_max),
-                    ratio * 100.0,
-                    fmt::bytes(est),
+                    ratio
+                        .map(|r| format!("sample compresses to {:.0}% · ≈{} saved", r * 100.0, fmt::bytes(est)))
+                        .unwrap_or_else(|| "compression not sampled: guard refused content access".into()),
                     if action == Action::Archive {
                         " (original kept in quarantine until purged)"
                     } else {
@@ -268,7 +288,7 @@ pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
         max_ratio: c.max_ratio,
         transparent: c.transparent,
     };
-    let SpacePlan { plan, .. } = archive_plan(roots, &o, None)?;
+    let SpacePlan { plan, blocked } = archive_plan(roots, &o, None)?;
     store::save(&plan)?;
     let cnt = plan.counts();
     println!(
@@ -282,6 +302,12 @@ pub fn cmd_archive(c: ArchiveCmd) -> Result<()> {
     }
     if !plan.entries.is_empty() {
         println!("{}", ui::dim(&format!("next: tdy review {}", plan.header.id)));
+        if blocked > 0 {
+            println!(
+                "{}",
+                ui::yellow(&format!("Override refused items: tdy review {} --override-refusals (optionally --entry ID)", plan.header.id))
+            );
+        }
     }
     Ok(())
 }

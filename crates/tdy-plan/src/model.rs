@@ -230,6 +230,12 @@ pub struct Entry {
     /// Agents over MCP can propose and reject, never approve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<String>,
+    /// Why this candidate was refused during planning; retained for human review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    /// Explicit human consent to act despite the recorded refusal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub override_refusal: bool,
     pub action: Action,
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]

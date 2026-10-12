@@ -4,7 +4,7 @@ Analyse, clean up, compress and organise the files on your disk — fast, frugal
 
 - **Fast scanner.** Parallel, work-stealing walk over `getattrlistbulk` (macOS) or `getdents64` + `statx` (Linux). Memory scales with directories, not files (≈150 MB for 10M files).
 - **Plans, not surprises.** Every action is an entry in a plan you review. Nothing touches disk until you approve it. Applies are journalled, crash-safe and undoable.
-- **Rules in plain English.** A decision model (OpenAI `gpt-6-luna` via the Decisions API, or SystemOne-compatible Jev / Clef) judges your rules. Code-level guards always win. The model picks between options; it never writes paths.
+- **Rules in plain English.** A decision model (OpenAI `gpt-6-luna` via the Decisions API, or SystemOne-compatible Jev / Clef) judges your rules. Code-level guards refuse unsafe candidates; you can explicitly override a refusal during review. The model picks between options; it never writes paths.
 - **Space without deleting.** Duplicates become copy-on-write clones (APFS `clonefile`, btrfs/xfs `FIDEDUPERANGE`). Cold folders get archived or transparently compressed.
 - **Agent-ready.** NDJSON/JSON output on the main commands, plus an MCP server where agents can propose but never approve.
 
@@ -94,6 +94,18 @@ tdy undo                      # reverse what can be reversed
 
 `latest` is the default plan for `review`, `apply`, `undo` and `show`. You can also pass a plan id or a unique prefix.
 
+Refused candidates stay in the plan with their reasons, even when every candidate was refused. Ordinary approval leaves them refused. To proceed explicitly:
+
+```sh
+tdy show latest
+tdy review latest --override-refusals --entry ENTRY_ID  # selected refused item
+tdy review latest --override-refusals                   # all refused items
+tdy apply latest --dry-run
+tdy apply latest
+```
+
+In either review TUI, `o` overrides the current refusal and `O` overrides visible refusals after confirmation. The Explore refusal dialog also offers to override its refused items in the saved plan. In `$EDITOR`, change a refused entry's verb to `override`. Resetting or rejecting an entry clears its override. MCP exposes refusal reasons and the review command; agents can apply an override recorded by the user but cannot authorize one themselves.
+
 ## Interactive UI
 
 `tdy ui [PATH]` opens a full-screen app; so does plain `tdy` in a terminal. It has three screens: switch with `1` `2` `3` or Tab, and `?` lists the keys on each.
@@ -117,7 +129,7 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 | `plan [PATHS]` | L1 detectors + L2 policy rules → plan (`--no-rules`, `--no-detectors`, `--show-blocked`) |
 | `ask REQUEST` | A plan from plain English, e.g. `tdy ask move videos over 1GB to ~/Archive` (`--explain` shows how it was understood, `--from` sets the folder) |
 | `plans`, `show` | List plans; print entries (filters: `--rule`, `--action`, `--status`, `--min-p`, `--under`) |
-| `review` | Approve or reject entries: TUI, `--edit`, `--approve-all`, `--approve/--reject` + filters |
+| `review` | Approve or reject entries: TUI, `--edit`, `--approve-all`, `--approve/--reject` + filters, `--override-refusals` |
 | `apply`, `undo` | Execute approved entries (`--dry-run`, `--entry`); reverse applied ones |
 | `explain PATH` | Which detector, guard or rule decides this path, with probabilities |
 | `dupes [--plan]` | Duplicates (size → sample hash → BLAKE3); the plan clone-dedupes or trashes copies |
@@ -145,7 +157,7 @@ Commands that take a folder (`ui`, `scan`, `top`, `diff`, `plan`, `dupes`, `arch
 | `installers`, `videos`, `folders`, `pdfs`, `dmg files` … | kind or extension filters |
 | anything else (`screenshots`, `old tax receipts`, `photos of my dog`) | what the judge checks each item against |
 
-Entries always wait for your review, and your keep rules (presets included) still protect what they protect. A request that the filters fully describe (`trash dmg files older than a year`) needs no judge.
+Entries always wait for your review, and your keep rules (presets included) retain protected candidates as refusals that require an explicit override. A request that the filters fully describe (`trash dmg files older than a year`) needs no judge.
 
 ## The policy file
 
@@ -240,7 +252,7 @@ Built-in rule packs. All are off until you list them in `presets = [...]`.
 
 ## Safety model
 
-1. **L0 guards** are code and absolute:
+1. **L0 guards** refuse candidates by default:
    - system locations, credentials (`~/.ssh`, keychains, …), app data (unless regenerable)
    - inside packages and bundles, and media libraries
    - cloud-synced folders and dataless placeholders
@@ -250,7 +262,7 @@ Built-in rule packs. All are off until you list them in `presets = [...]`.
    - move destinations: never into system, credential, app-data or package locations
 2. **L1 detectors** propose regenerable artifacts only when the marker file is present (`target/` next to `Cargo.toml`, `node_modules` next to `package.json`, a valid `CACHEDIR.TAG`, …). `tdy detectors` lists all of them.
 3. **L2 rules** go through the judge as described above.
-4. **You approve.** `apply` re-fingerprints every entry (device, inode, size, newest mtime, file count, hash for dedupes) and re-runs the guards. Changed items are skipped.
+4. **You approve.** Refused candidates need an explicit human override, recorded per entry with the original reason. `apply` re-fingerprints every entry (device, inode, size, newest mtime, file count, hash for dedupes); changed items are skipped even after an override. Source guards are bypassed only for explicitly overridden entries. Destination validation, required rule checks, filesystem permissions, mount boundaries and journalling still apply.
 
 **Journal and recovery:**
 - `apply` journals intent before every change and the outcome after, fsync'd.

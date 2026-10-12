@@ -50,6 +50,7 @@ pub enum ExecOp {
 pub struct PlanResult {
     pub plan: String,
     pub actions: usize,
+    pub retained: usize,
     pub reclaimable: u64,
     pub blocked: usize,
     pub blocked_bytes: u64,
@@ -66,7 +67,8 @@ impl PlanResult {
         let c = plan.counts();
         Ok(PlanResult {
             plan: plan.header.id.clone(),
-            actions: c.total,
+            actions: plan.entries.iter().filter(|e| e.refusal.is_none()).count(),
+            retained: c.total,
             reclaimable: c.reclaimable,
             elapsed_ms: started.elapsed().as_millis() as u64,
             ..Default::default()
@@ -196,9 +198,9 @@ pub fn propose(tx: Sender<Msg>, action: Action, items: Vec<(PathBuf, tdy_plan::B
             let (plan, entries, bytes, accepted) = match &p.plan {
                 Some(pl) => (
                     Some(pl.header.id.clone()),
-                    pl.entries.len(),
-                    pl.entries.iter().map(|e| e.bytes.alloc).sum(),
-                    pl.entries.iter().map(|e| e.path.clone()).collect(),
+                    pl.entries.iter().filter(|e| e.refusal.is_none()).count(),
+                    pl.entries.iter().filter(|e| e.refusal.is_none()).map(|e| e.bytes.alloc).sum(),
+                    pl.entries.iter().filter(|e| e.refusal.is_none()).map(|e| e.path.clone()).collect(),
                 ),
                 None => (None, 0, 0, vec![]),
             };
@@ -248,7 +250,8 @@ pub fn cleanup(tx: Sender<Msg>, root: PathBuf, detectors: bool, rules: bool) {
             store::save(&planned.plan)?;
             let c = planned.plan.counts();
             out.plan = planned.plan.header.id.clone();
-            out.actions = c.total;
+            out.actions = planned.plan.entries.iter().filter(|e| e.refusal.is_none()).count();
+            out.retained = c.total;
             out.reclaimable = c.reclaimable;
             out.blocked = planned.blocked.len();
             out.blocked_bytes = planned.blocked.iter().map(|b| b.bytes).sum();

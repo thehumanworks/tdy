@@ -266,4 +266,126 @@ filter = {{ ext = ["txt"] }}
     let rules = l2::compile(&policy, &[t.path().to_path_buf()], None, &Calibration::default());
     let run = l2::run(&policy, &rules, Some(&RefuseKeep), &guards, 2, &|_, _| {}).unwrap();
     assert!(matches!(&run.outcomes[0].kind, OutcomeKind::Kept { p: None, .. }), "{:?}", run.outcomes[0].kind);
+    let entries = l2::entries(&run, Mode::Autonomous, None, &mut Default::default());
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, tdy_plan::Status::Rejected);
+    assert!(entries[0].refusal.as_deref().unwrap().contains("keep rule protect.tax was unanswered"));
+    assert!(entries[0].approved_by.is_none());
+}
+
+#[test]
+fn guard_and_negative_judge_refusals_are_retained_without_unrelated_candidates() {
+    let t = tempfile::tempdir().unwrap();
+    for name in ["guard.txt", "negative.txt", "unrelated.bin"] {
+        fs::write(t.path().join(name), b"candidate").unwrap();
+        old(&t.path().join(name));
+    }
+    let policy: Policy = toml::from_str(&format!(
+        r#"
+[[rule]]
+id = "remove.text"
+action = "trash"
+scope = ["{}"]
+filter = {{ ext = ["txt"] }}
+when.any = ["obsolete"]
+"#,
+        t.path().display()
+    ))
+    .unwrap();
+    let guards = Guards::new(GuardConfig { min_age: 0, protect: vec![t.path().join("guard.txt")], ..Default::default() });
+    let rules = l2::compile(&policy, &[t.path().to_path_buf()], None, &Calibration::default());
+    let run = l2::run(&policy, &rules, Some(&Script(vec![])), &guards, 2, &|_, _| {}).unwrap();
+    assert_eq!(run.requests, 1); // guard refusal does not need a paid judge call
+    let entries = l2::entries(&run, Mode::Autonomous, None, &mut Default::default());
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e.status == tdy_plan::Status::Rejected && !e.override_refusal && e.approved_by.is_none()));
+    assert!(entries.iter().find(|e| e.path.ends_with("guard.txt")).unwrap().refusal.as_deref().unwrap().starts_with("protect:"));
+    assert!(entries.iter().find(|e| e.path.ends_with("negative.txt")).unwrap().refusal.as_deref().unwrap().contains("judge did not match"));
+}
+
+#[test]
+fn partial_l2_guard_refusal_is_retained_beside_allowed_tag() {
+    let t = tempfile::tempdir().unwrap();
+    fs::write(t.path().join("fresh.txt"), b"candidate").unwrap();
+    let policy: Policy = toml::from_str(&format!(
+        r#"
+[[rule]]
+id = "remove"
+action = "trash"
+scope = ["{scope}"]
+[[rule]]
+id = "label"
+action = "tag"
+scope = ["{scope}"]
+tags = ["Review"]
+"#,
+        scope = t.path().display()
+    ))
+    .unwrap();
+    let guards = Guards::new(GuardConfig::default());
+    let rules = l2::compile(&policy, &[t.path().to_path_buf()], None, &Calibration::default());
+    let run = l2::run(&policy, &rules, None, &guards, 2, &|_, _| {}).unwrap();
+    let entries = l2::entries(&run, Mode::Autonomous, None, &mut Default::default());
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().any(|e| e.action == Action::Tag && e.status == tdy_plan::Status::Approved));
+    assert!(entries.iter().any(|e| e.action == Action::Trash && e.status == tdy_plan::Status::Rejected && e.refusal.is_some()));
+}
+
+#[test]
+fn tag_below_threshold_is_retained_as_refused() {
+    let t = tempfile::tempdir().unwrap();
+    fs::write(t.path().join("candidate.txt"), b"candidate").unwrap();
+    let policy: Policy = toml::from_str(&format!(
+        r#"
+[[rule]]
+id = "label"
+action = "tag"
+scope = ["{}"]
+tags = ["Review"]
+threshold = 0.8
+when.any = ["relevant"]
+"#,
+        t.path().display()
+    ))
+    .unwrap();
+    let guards = Guards::new(GuardConfig::default());
+    let rules = l2::compile(&policy, &[t.path().to_path_buf()], None, &Calibration::default());
+    let run = l2::run(&policy, &rules, Some(&Script(vec![("label", "candidate", 0.7)])), &guards, 2, &|_, _| {}).unwrap();
+    let entries = l2::entries(&run, Mode::Autonomous, None, &mut Default::default());
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, tdy_plan::Status::Rejected);
+    assert!(entries[0].refusal.as_deref().unwrap().contains("judge did not match"));
+}
+
+#[test]
+fn refused_delete_preserves_safety_downgrade() {
+    let t = tempfile::tempdir().unwrap();
+    fs::write(t.path().join("wedding.txt"), b"candidate").unwrap();
+    let policy: Policy = toml::from_str(&format!(
+        r#"
+[[rule]]
+id = "remove"
+action = "delete"
+scope = ["{scope}"]
+when.any = ["obsolete"]
+[[rule]]
+id = "label"
+action = "tag"
+scope = ["{scope}"]
+tags = ["Review"]
+"#,
+        scope = t.path().display()
+    ))
+    .unwrap();
+    let guards = Guards::new(GuardConfig::default());
+    let rules = l2::compile(&policy, &[t.path().to_path_buf()], None, &Calibration::default());
+    let run = l2::run(&policy, &rules, Some(&Script(vec![("remove", "wedding", 0.99)])), &guards, 2, &|_, _| {}).unwrap();
+    assert_eq!(run.requests, 1);
+    let entries = l2::entries(&run, Mode::Autonomous, None, &mut Default::default());
+    let refused = entries.iter().find(|e| e.refusal.is_some()).unwrap();
+    assert_eq!(refused.action, Action::Trash);
+    assert_eq!(refused.undo, tdy_plan::Undo::Restore);
+    assert_eq!(refused.status, tdy_plan::Status::Rejected);
+    assert!(refused.refusal.as_deref().unwrap().starts_with("recent:"));
+    assert!(refused.reason.contains("downgraded delete → trash"));
 }

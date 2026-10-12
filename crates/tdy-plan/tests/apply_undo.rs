@@ -72,6 +72,8 @@ fn entry(path: &Path, action: Action, dest: Option<PathBuf>, taken: &mut HashSet
         id,
         status: Status::Approved,
         approved_by: Some("human".into()),
+        refusal: None,
+        override_refusal: false,
         action,
         path: path.to_path_buf(),
         dest,
@@ -304,6 +306,51 @@ fn editor_roundtrip() {
     assert_eq!(plan.entries[0].status, Status::Approved);
     assert_eq!(plan.entries[2].status, Status::Rejected);
     assert!(tdy_plan::review::parse_editor(&mut plan, "frobnicate abcd\n").is_err());
+}
+
+#[test]
+fn refusal_requires_explicit_human_override_and_survives_editor() {
+    use tdy_plan::review::{self, Filter};
+    let t = tempfile::tempdir_in(home()).unwrap();
+    let source = t.path().join("refused.txt");
+    fs::write(&source, b"keep until explicitly overridden").unwrap();
+    let mut e = entry(&source, Action::Delete, None, &mut HashSet::new());
+    let legacy = serde_json::to_value(&e).unwrap();
+    assert!(legacy.get("refusal").is_none());
+    assert!(legacy.get("override_refusal").is_none());
+    let legacy: Entry = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.refusal, None);
+    assert!(!legacy.override_refusal);
+    e.status = Status::Rejected;
+    e.approved_by = None;
+    e.refusal = Some("protected by policy".into());
+    let mut plan = new_plan(t.path(), vec![e]);
+    assert_eq!(review::set_status(&mut plan, &Filter::default(), Status::Approved, "human"), 0);
+    let id = plan.entries[0].id.clone();
+    assert_eq!(review::parse_editor(&mut plan, &format!("approve {id}")).unwrap(), (0, 1, 0));
+    assert!(review::render_editor(&plan).contains("protected by policy"));
+    assert_eq!(review::parse_editor(&mut plan, &format!("override {id}")).unwrap(), (1, 0, 0));
+    assert!(plan.entries[0].override_refusal);
+    assert_eq!(plan.entries[0].approved_by.as_deref(), Some("human"));
+    let text = review::render_editor(&plan);
+    assert_eq!(review::parse_editor(&mut plan, &text).unwrap(), (1, 0, 0));
+    assert!(plan.entries[0].override_refusal);
+    review::set_one(&mut plan.entries[0], Status::Pending, "human");
+    assert!(!plan.entries[0].override_refusal);
+    assert_eq!(review::override_refusals(&mut plan, &Filter::default()), 1);
+    assert_eq!(review::override_refusals(&mut plan, &Filter::default()), 0);
+    // Even a forged policy approval with the override flag cannot execute.
+    plan.entries[0].approved_by = Some("policy".into());
+    let report = apply(&mut plan, &ApplyOptions::default(), &no_guard, &mut |_| {}).unwrap();
+    assert_eq!(report.skipped, 1);
+    assert!(source.exists());
+    assert_eq!(plan.entries[0].status, Status::Rejected);
+    assert!(!plan.entries[0].override_refusal);
+    assert!(review::override_one(&mut plan.entries[0]));
+    let report = apply(&mut plan, &ApplyOptions::default(), &no_guard, &mut |_| {}).unwrap();
+    assert_eq!(report.applied, 1);
+    assert!(!source.exists());
+    assert!(!review::override_one(&mut plan.entries[0]));
 }
 
 #[test]

@@ -68,6 +68,22 @@ pub fn apply(plan: &mut Plan, opts: &ApplyOptions, preflight: Preflight<'_>, on:
         {
             continue;
         }
+        // A saved approval alone cannot bypass a refusal, including policy approval.
+        if let Some(why) = &e.refusal
+            && !(e.override_refusal && e.approved_by.as_deref() == Some("human"))
+        {
+            let msg = format!("refusal requires explicit human override: {why}");
+            if !opts.dry_run {
+                let e = &mut plan.entries[i];
+                e.status = Status::Rejected;
+                e.approved_by = None;
+                e.override_refusal = false;
+                e.outcome = Some(Outcome { at: now(), error: Some(msg.clone()), ..Default::default() });
+            }
+            report.skipped += 1;
+            on(Event::Skip(&plan.entries[i], msg));
+            continue;
+        }
         // 1. fingerprint
         if opts.verify
             && let Err(d) = verify(&e.path, &e.fingerprint)

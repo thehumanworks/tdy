@@ -94,6 +94,7 @@ pub enum Act {
 
 pub enum Confirm {
     Propose(Action, Vec<(PathBuf, Bytes)>),
+    OverrideRefusals(String),
     Apply(String),
     Undo(String),
 }
@@ -311,6 +312,32 @@ impl App {
             }
             Confirm::Apply(id) => self.plans.start(&self.ctx, id, worker::ExecOp::Apply),
             Confirm::Undo(id) => self.plans.start(&self.ctx, id, worker::ExecOp::Undo),
+            Confirm::OverrideRefusals(id) => {
+                if self.plans.busy.as_ref().is_some_and(|(busy, _)| *busy == id) {
+                    self.toast("wait for the job on this plan to finish");
+                    return;
+                }
+                let result = (|| -> anyhow::Result<Vec<PathBuf>> {
+                    let (mut plan, _) = tdy_plan::store::load(Some(&id))?;
+                    tdy_plan::review::override_refusals(&mut plan, &tdy_plan::review::Filter::default());
+                    tdy_plan::store::save(&plan)?;
+                    Ok(plan
+                        .entries
+                        .into_iter()
+                        .filter(|e| e.override_refusal && e.status == tdy_plan::Status::Approved)
+                        .map(|e| e.path)
+                        .collect())
+                })();
+                match result {
+                    Ok(paths) => {
+                        for path in paths {
+                            self.explore.marks.remove(&path);
+                        }
+                        self.act(Act::OpenPlan(id), false);
+                    }
+                    Err(e) => self.toast(format!("could not override refusals: {e:#}")),
+                }
+            }
         }
     }
 
@@ -436,7 +463,10 @@ fn draw_dialog(f: &mut Frame<'_>, d: &Dialog) {
         None => Line::from(Span::styled("any key to close", dim())),
     });
     let w = (lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4).clamp(40, 100);
-    let h = lines.len() as u16 + 2;
+    let inner_width = usize::from(w.min(f.area().width).saturating_sub(2).max(1));
+    let h = lines.iter().map(|line| line.width().div_ceil(inner_width).max(1) + usize::from(line.width() > inner_width)).sum::<usize>()
+        as u16
+        + 2;
     let area = centered(f.area(), w, h);
     f.render_widget(Clear, area);
     f.render_widget(
@@ -471,6 +501,7 @@ fn draw_help(f: &mut Frame<'_>, tab: Tab) {
             ("n", "new plan (from the list)"),
             ("a r p space", "approve / reject / pending / cycle"),
             ("A R", "approve / reject everything shown"),
+            ("o O", "override refused entry / everything shown (confirm)"),
             ("/ ⏎", "filter / details"),
             ("X", "apply: dry run first, then confirm"),
             ("U", "undo applied entries (confirm)"),

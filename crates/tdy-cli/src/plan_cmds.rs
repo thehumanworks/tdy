@@ -119,6 +119,9 @@ pub struct ReviewCmd {
     /// Reject entries matching the filters.
     #[arg(long)]
     pub reject: bool,
+    /// Explicitly override refusals matching the filters (all refusals if no filter).
+    #[arg(long = "override-refusals", conflicts_with_all = ["approve_all", "reject_all", "approve", "reject", "reset", "edit"])]
+    pub override_refusals: bool,
     /// Set matching entries back to pending.
     #[arg(long)]
     pub reset: bool,
@@ -221,8 +224,8 @@ pub fn cmd_plan(c: PlanCmd) -> Result<()> {
         ui::bold("plan"),
         ui::bold(&plan.header.id),
         ui::dim(&format!(
-            "{} actions · {} reclaimable · {} blocked by guards ({}) · {:.1}s",
-            counts.total,
+            "{} actions · {} reclaimable · {} refused ({}) · {:.1}s",
+            counts.pending + counts.approved,
             fmt::bytes(counts.reclaimable),
             planned.blocked.len(),
             fmt::bytes(blocked_bytes),
@@ -242,6 +245,15 @@ pub fn cmd_plan(c: PlanCmd) -> Result<()> {
         for b in planned.blocked.iter().take(c.lines) {
             println!("  {:>9}  {}  {}", fmt::bytes(b.bytes), display_path(&b.path), ui::dim(&format!("{} · {}", b.by, b.block)));
         }
+    }
+    if plan.entries.iter().any(|e| e.refusal.is_some()) {
+        println!(
+            "{}",
+            ui::yellow(&format!(
+                "Refused entries are saved for review. Override all: tdy review {} --override-refusals (add --entry ID to select items)",
+                plan.header.id
+            ))
+        );
     }
     if plan.header.mode == tdy_plan::Mode::Autonomous {
         println!("{}", ui::dim(&format!("autonomous: entries are pre-approved → tdy apply {}", plan.header.id)));
@@ -300,6 +312,12 @@ pub fn cmd_show(c: ShowCmd) -> Result<()> {
 pub fn cmd_review(c: ReviewCmd) -> Result<()> {
     let (mut plan, _) = store::load(c.plan.as_deref())?;
     let f = c.filter.to_filter()?;
+    if c.override_refusals {
+        let n = review::override_refusals(&mut plan, &f);
+        store::save(&plan)?;
+        println!("{} {n} refused entries explicitly overridden and approved", ui::bold(&plan.header.id));
+        return Ok(());
+    }
     let bulk = c.approve_all || c.reject_all || c.approve || c.reject || c.reset;
     if bulk {
         if (c.approve || c.reject || c.reset) && f.is_empty() {
@@ -369,7 +387,10 @@ pub fn apply_guard_with(cfg: tdy_rules::GuardConfig) -> impl Fn(&tdy_plan::Entry
             regenerable: e.source.layer == tdy_plan::Layer::L1,
             min_age: None,
         };
-        guards.check(&e.path, e.action, &facts, None).map_err(|b| b.to_string())?;
+        let overridden = e.refusal.is_some() && e.override_refusal && e.approved_by.as_deref() == Some("human");
+        if !overridden {
+            guards.check(&e.path, e.action, &facts, None).map_err(|b| b.to_string())?;
+        }
         // Rule checks (e.g. "the extracted copy is identical") must still hold.
         if let Some(c) = e.evidence.as_ref().and_then(|v| v.get("check")).and_then(|c| c.as_str())
             && !tdy_rules::checks::passes(c, &e.path)

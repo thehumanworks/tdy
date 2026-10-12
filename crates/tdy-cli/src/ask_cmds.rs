@@ -120,6 +120,15 @@ pub fn cmd_ask(c: AskCmd) -> Result<()> {
     for e in a.plan.entries.iter().take(20) {
         println!("  {}", tdy_plan::review::line(e));
     }
+    if a.plan.entries.iter().any(|e| e.refusal.is_some()) {
+        println!(
+            "{}",
+            ui::yellow(&format!(
+                "Refused entries are saved for review. Override all: tdy review {} --override-refusals (add --entry ID to select items)",
+                a.plan.header.id
+            ))
+        );
+    }
     if a.plan.entries.is_empty() {
         println!("{}", ui::dim(&format!("nothing in {} matched", display_path(&req.scope))));
     } else {
